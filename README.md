@@ -1,48 +1,136 @@
 # ADSLite
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-cross--platform-brightgreen.svg)](https://github.com/yourusername/ADSLite)
-[![Tested](https://img.shields.io/badge/tested-Beckhoff%20C6015--0010-success)](https://www.beckhoff.com)
+ADSLite 是一个轻量级 ADS 通信库，提供统一 C API，并在运行时按环境自动选择后端：
 
-:rocket: 一个轻量级、跨平台的ADS通信库，无需安装额外的ADS通信包，直接与倍福(TwinCAT)控制器进行高效通信。
+- `standalone` 后端：使用项目内 `standalone/` 协议栈。
+- `twincat` 后端：在 Windows 下通过 `TcAdsDll` 导入库调用 TwinCAT ADS API。
 
-## :sparkles: 特性
+## 主要能力
 
-- :rocket: **零依赖**：无需安装TwinCAT ADS通信包
-- :globe_with_meridians: **跨平台支持**：Windows、Linux、嵌入式系统
-- :package: **32位库支持**：兼容各种嵌入式平台
-- :mag: **自动AmsNetId获取**：无需手动配置网络标识
-- :zap: **高性能**：微秒级通信延迟
-- :wrench: **简单易用**：简洁的API接口设计
+- 统一 API：`AdsLiteAPI.h`
+- 路由辅助：`AdsLiteInitRouting` / `AdsLiteShutdownRouting`
+- 同步读写：`AdsLiteSyncReadReq` / `AdsLiteSyncWriteReq` / `AdsLiteSyncReadWriteReq`
+- 变量按名/按句柄读写
+- 运行时后端自动选择与强制覆盖
 
-## :clipboard: 已验证平台
+## 后端选择规则
 
-| 平台类型 | 具体型号 | 状态 | 备注 |
-|---------|---------|------|------|
-| **控制器端** | 倍福PLC C6015-0010 (TwinCAT 3) | :white_check_mark: 已验证 | 稳定运行 |
-| **客户端端** | Windows 10 (x86/x64) | :white_check_mark: 已验证 | 完整支持 |
-| **客户端端** | ARM64 (瑞芯微RK35xx) | :white_check_mark: 已验证 | 嵌入式优化 |
-| **客户端端** | Linux发行版 | :white_check_mark: 已验证 | 通用支持 |
+- 环境变量 `ADSLITE_BACKEND`：`auto`(默认) / `standalone` / `twincat`
+- `auto` 模式：
+- Windows 下检测 `48898` 监听者为 `TCATSysSrv.exe` 且 TwinCAT 后端可用时，选择 `twincat`
+- 否则选择 `standalone`
+- 非 Windows：仅 `standalone`
 
-## :rocket: 性能表现
+## 构建
 
-基于1000字节缓冲区压力测试（800次迭代）：
+### 通用构建
 
-| 测试类型 | 平均耗时(us) | 平均速度(KB/s) | 成功率 | 数据量 |
-|---------|-------------|---------------|--------|--------|
-| **读取测试** | 958.09 | 1031-1360 | 100% | 800KB |
-| **写入测试** | 989.79 | 755-1346 | 100% | 800KB |
-| **混合测试** | 914.13 | 875-1328 | 100% | 1.6MB |
-| **总计** | **953.67** | **~1100** | **100%** | **2.4MB** |
-
-## :package: 安装
-
-### 从源码编译
-
-```bash
-git clone https://github.com/GuiZhongLai/ADSLite.git
-cd ADSLite
-mkdir build && cd build
+```powershell
+mkdir build
+cd build
 cmake ..
-make
-sudo make install
+cmake --build .
+```
+
+### Windows + TcAdsDll 构建说明
+
+项目当前使用仓库内固定相对路径查找 TwinCAT SDK 文件：
+
+- 头文件：`TcAdsDll/Include/TcAdsAPI.h`
+- 32 位导入库：`TcAdsDll/Lib/TcAdsDll.lib`
+- 64 位导入库：`TcAdsDll/x64/lib/TcAdsDll.lib`
+
+`CMakeLists.txt` 中的行为：
+
+- 选项 `ADSLITE_ENABLE_TWINCAT` 默认 `ON`
+- 若头文件和对应位数导入库都存在，编译宏 `ADSLITE_TWINCAT_ENABLED=1`
+- 否则自动降级为 `ADSLITE_TWINCAT_ENABLED=0`（仅 standalone）
+
+可用如下命令显式控制：
+
+```powershell
+cmake -S . -B build -DADSLITE_ENABLE_TWINCAT=ON
+cmake --build build
+```
+
+## TcAdsDll 的安装与运行依赖
+
+### 编译期检查
+
+满足以下任一位数组合即可启用 TwinCAT 后端：
+
+- x86: `TcAdsDll/Include/TcAdsAPI.h` + `TcAdsDll/Lib/TcAdsDll.lib`
+- x64: `TcAdsDll/Include/TcAdsAPI.h` + `TcAdsDll/x64/lib/TcAdsDll.lib`
+
+### 运行期检查
+
+启用 TwinCAT 后端时，进程运行需要可加载 `TcAdsDll.dll`。
+
+建议方式：
+
+- 将匹配位数的 `TcAdsDll.dll` 放到可执行文件同目录
+- 或将 DLL 所在目录加入 `PATH`
+- 或确保 TwinCAT 安装目录在系统 DLL 搜索路径中
+
+如果运行期找不到 DLL，Windows 会在加载时失败（即使编译和链接通过）。
+
+## 使用者如何接入
+
+### 1. 引入头文件
+
+```cpp
+#include "AdsLiteAPI.h"
+#include "AdsLiteDef.h"
+```
+
+### 2. 初始化与通信
+
+```cpp
+AmsNetId target{};
+if (AdsLiteInitRouting("192.168.1.1", &target) != 0) {
+    return -1;
+}
+
+uint16_t port = AdsLitePortOpen();
+AmsAddr addr{target, AMSPORT_R0_PLC_TC3};
+
+int32_t value = 0;
+uint32_t bytesRead = 0;
+AdsLiteReadByName(port, &addr, "GVL.nCounter", &value, sizeof(value), &bytesRead);
+
+AdsLitePortClose(port);
+AdsLiteShutdownRouting(&target);
+```
+
+### 3. 控制后端（可选）
+
+```powershell
+$env:ADSLITE_BACKEND = "twincat"     # 或 standalone / auto
+```
+
+## API 说明（摘要）
+
+- 设备识别：`AdsLiteGetDeviceNetId`（统一走 standalone 发现逻辑）
+- 路由管理：`AdsLiteInitRouting` / `AdsLiteShutdownRouting`
+- 端口管理：`AdsLitePortOpen` / `AdsLitePortClose`
+- 同步请求：`AdsLiteSyncReadReq` / `AdsLiteSyncWriteReq` / `AdsLiteSyncReadWriteReq`
+- 状态控制：`AdsLiteSyncReadStateReq` / `AdsLiteSyncWriteControlReq`
+- 变量读写：`AdsLiteReadByName` / `AdsLiteWriteByName` / `AdsLiteReadByHandle` / `AdsLiteWriteByHandle`
+
+
+## 项目结构
+
+```text
+AdsLiteAPI.h
+AdsLiteAPI.cpp
+AdsLiteDef.h
+backend/
+standalone/
+TcAdsDll/
+example/
+CMakeLists.txt
+```
+
+## 许可证
+
+MIT，见 `LICENSE`。
