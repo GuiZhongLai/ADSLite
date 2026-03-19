@@ -420,3 +420,8 @@ long GetRemoteAddress(const std::string &remote, AmsNetId &netId)
     memcpy(&netId, f.data(), sizeof(netId));
     return 0;
 }
+
+long AdsLiteStandaloneGetRemoteAddress(const std::string &remote, AmsNetId &netId)
+{
+    return GetRemoteAddress(remote, netId);
+}

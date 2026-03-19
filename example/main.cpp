@@ -1,599 +1,965 @@
+/**
+ * @file main.cpp
+ * @brief AdsLite API 测试套件 - 包含基本功能测试、数组读写测试和性能测试
+ *
+ * 本文件演示了 AdsLite 库的各种功能测试：
+ * 1. 基础通信测试（端口打开、路由初始化）
+ * 2. 内存读写测试（通过索引组/偏移访问PLC内存）
+ * 3. 符号名读写测试（通过变量名访问PLC变量）
+ * 4. 句柄读写测试（获取变量句柄后进行高效读写）
+ * 5. 设备状态读取
+ * 6. 数组读写测试（32字节和256字节数组）
+ * 7. 性能测试（测量各操作的响应时间）
+ *
+ * 使用方法：
+ *   - 修改 TEST_REMOTE_ADDR 和 TEST_PORT 配置目标PLC
+ *   - 确保测试变量已定义在PLC中：GVL.TestVar (INT), GVL.Perf_32B (ARRAY [0..31] OF BYTE), GVL.Perf_256B (ARRAY [0..255] OF BYTE)
+ *   - 编译运行：.\example.exe
+ */
+
 #include "AdsLiteAPI.h"
+#include "standalone/AmsNetId.h"
+
 #include <iostream>
 #include <vector>
-#include <thread>
 #include <chrono>
-#include <atomic>
 #include <iomanip>
-#include <cstring>
-#include <functional>
-#include <sstream>
-#include <ctime>
+#include <algorithm>
+#include <numeric>
+#include <thread>
 
-/*
-class AdsLiteTester
+// ============================================================================
+// 配置参数 - 请根据实际环境修改
+// ============================================================================
+
+/// 目标PLC的IP地址
+static const char *TEST_REMOTE_ADDR = "192.168.11.88";
+
+/// PLC运行时端口（TC3默认851，TC2默认801）
+static const uint16_t TEST_PORT = 851;
+
+/// 测试用内存区域索引组（0x4020 = PLC内存区域）
+static const uint32_t INDEX_GROUP = 0x4020;
+
+/// 测试用内存偏移地址 (PLC内存区域起始地址)
+static const uint32_t OFFSET = 1000;
+
+/// 性能测试迭代次数
+static const int PERF_ITERATIONS = 10;
+
+/// 32字节数组大小
+static const size_t SIZE_32B = 32;
+
+/// 256字节数组大小
+static const size_t SIZE_256B = 256;
+
+/// LREAL浮点数数组大小 (33个元素 × 8字节 = 264字节)
+static const size_t SIZE_32F = 33 * 8;
+
+// ============================================================================
+// 全局变量
+// ============================================================================
+
+/// ADS通信端口号
+static uint16_t g_port = 0;
+
+/// 目标设备地址
+static AmsAddr g_targetAddr;
+
+/**
+ * @brief 打印性能测试结果
+ * @param name   测试名称
+ * @param avgMs  平均耗时（毫秒）
+ * @param minMs  最小耗时（毫秒）
+ * @param maxMs  最大耗时（毫秒）
+ */
+void PrintPerfResult(const char *name, double avgMs, double minMs, double maxMs)
 {
-private:
-    AmsNetId netId_;
-    AmsAddr amsAddr_;
-    uint16_t port_;
-    std::atomic<bool> stopTest_{false};
-    std::atomic<uint64_t> totalOperations_{0};
-    std::atomic<uint64_t> failedOperations_{0};
+    std::cout << "  " << std::left << std::setw(24) << name
+              << "avg=" << std::fixed << std::setprecision(3) << avgMs << "ms  "
+              << "min=" << minMs << "ms  "
+              << "max=" << maxMs << "ms" << std::endl;
+}
 
-public:
-    AdsLiteTester(const std::string &remoteIp, const std::string &localIp)
-    {
-        initialize(remoteIp, localIp);
-    }
-    ~AdsLiteTester()
-    {
-        cleanup();
-    }
+// ============================================================================
+// 测试用例
+// ============================================================================
 
-private:
-    void initialize(const std::string &remoteIp, const std::string &localIp)
-    {
-        // 获取远程地址
-        int64_t nRet = AdsLiteGetRemoteAddress(remoteIp.c_str(), &netId_);
-        if (nRet != 0)
-        {
-            std::cerr << "Failed to get remote address: " << nRet << std::endl;
-            return;
-        }
-        std::cout << "NetId: ";
-        for (int i = 0; i < 6; ++i)
-        {
-            std::cout << static_cast<int>(netId_.b[i]) << " ";
-        }
-        std::cout << std::endl;
-        // 添加路由
-        nRet = AdsLiteAddRemoteRoute(remoteIp.c_str(), localIp.c_str(), "adslite");
-        if (nRet != 0)
-        {
-            std::cerr << "Failed to add remote route: " << nRet << std::endl;
-        }
-        nRet = AdsLiteAddLocalRoute(remoteIp.c_str(), &netId_);
-        if (nRet != 0)
-        {
-            std::cerr << "Failed to add local route: " << nRet << std::endl;
-        }
-        // 打开端口
-        port_ = AdsLitePortOpen();
-        if (port_ == 0)
-        {
-            std::cerr << "Failed to open port" << std::endl;
-            return;
-        }
-        // 设置AMS地址
-        amsAddr_.netId = netId_;
-        amsAddr_.port = AMSPORT_R0_PLC_TC3;
-    }
-    void cleanup()
-    {
-        if (port_ != 0)
-        {
-            AdsLitePortClose(port_);
-        }
-        AdsLiteDeleteLocalRoute(&netId_);
-    }
-
-public:
-    int64_t readData(uint32_t indexGroup, uint32_t indexOffset, std::vector<uint8_t> &buffer)
-    {
-        uint32_t len = 0;
-        int64_t nRet = AdsLiteSyncReadReq(port_, &amsAddr_, indexGroup, indexOffset,
-                                          buffer.size(), buffer.data(), &len);
-
-        totalOperations_++;
-        if (nRet != 0)
-        {
-            failedOperations_++;
-        }
-
-        return nRet;
-    }
-    int64_t writeData(uint32_t indexGroup, uint32_t indexOffset, const std::vector<uint8_t> &buffer)
-    {
-        int64_t nRet = AdsLiteSyncWriteReq(port_, &amsAddr_, indexGroup, indexOffset,
-                                           buffer.size(), buffer.data());
-
-        totalOperations_++;
-        if (nRet != 0)
-        {
-            failedOperations_++;
-        }
-
-        return nRet;
-    }
-    void pressureTestRead(uint32_t iterations, uint32_t delayMs = 0)
-    {
-        std::vector<uint8_t> buffer(100); // 读取缓冲区
-
-        for (uint32_t i = 0; i < iterations && !stopTest_; ++i)
-        {
-            int64_t result = readData(0x4020, 0x7d0, buffer);
-
-            if (result == 0)
-            {
-                if (i % 100 == 0)
-                { // 每100次输出一次进度
-                    std::cout << "Read iteration " << i << " successful" << std::endl;
-                }
-            }
-            else
-            {
-                std::cerr << "Read failed at iteration " << i << ": " << result << std::endl;
-            }
-
-            if (delayMs > 0)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-            }
-        }
-    }
-    void pressureTestWrite(uint32_t iterations, uint32_t delayMs = 0)
-    {
-        std::vector<uint8_t> testData(50); // 测试数据
-        for (size_t i = 0; i < testData.size(); ++i)
-        {
-            testData[i] = static_cast<uint8_t>(i % 256);
-        }
-        for (uint32_t i = 0; i < iterations && !stopTest_; ++i)
-        {
-            // 修改测试数据以模拟不同的写入内容
-            testData[0] = static_cast<uint8_t>(i % 256);
-
-            int64_t result = writeData(0x4020, 0x7d0, testData);
-
-            if (result == 0)
-            {
-                if (i % 100 == 0)
-                {
-                    std::cout << "Write iteration " << i << " successful" << std::endl;
-                }
-            }
-            else
-            {
-                std::cerr << "Write failed at iteration " << i << ": " << result << std::endl;
-            }
-
-            if (delayMs > 0)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-            }
-        }
-    }
-    void mixedPressureTest(uint32_t iterations, uint32_t delayMs = 0)
-    {
-        std::vector<uint8_t> readBuffer(100);
-        std::vector<uint8_t> writeBuffer(50);
-
-        for (size_t i = 0; i < writeBuffer.size(); ++i)
-        {
-            writeBuffer[i] = static_cast<uint8_t>(i % 256);
-        }
-        for (uint32_t i = 0; i < iterations && !stopTest_; ++i)
-        {
-            // 交替进行读写操作
-            if (i % 2 == 0)
-            {
-                int64_t result = readData(0x4020, 0x7d0, readBuffer);
-                if (result != 0 && i % 10 == 0)
-                {
-                    std::cerr << "Mixed test read failed at iteration " << i << ": " << result << std::endl;
-                }
-            }
-            else
-            {
-                writeBuffer[0] = static_cast<uint8_t>(i % 256);
-                int64_t result = writeData(0x4020, 0x1388, writeBuffer);
-                if (result != 0 && i % 10 == 0)
-                {
-                    std::cerr << "Mixed test write failed at iteration " << i << ": " << result << std::endl;
-                }
-            }
-            if (i % 200 == 0)
-            {
-                std::cout << "Mixed test iteration " << i << std::endl;
-            }
-
-            if (delayMs > 0)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-            }
-        }
-    }
-    void stopTest()
-    {
-        stopTest_ = true;
-    }
-    void printStatistics() const
-    {
-        std::cout << "\n=== Test Statistics ===" << std::endl;
-        std::cout << "Total operations: " << totalOperations_ << std::endl;
-        std::cout << "Failed operations: " << failedOperations_ << std::endl;
-        std::cout << "Success rate: " << std::fixed << std::setprecision(2)
-                  << (100.0 * (totalOperations_ - failedOperations_) / totalOperations_)
-                  << "%" << std::endl;
-    }
-};
-*/
-
-class AdsLiteTester
+/**
+ * @brief 测试1：ADS端口打开和路由初始化
+ *
+ * 测试流程：
+ *   1. 打开ADS通信端口
+ *   2. 初始化到目标设备的路由
+ *   3. 设置通信超时时间
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestPortAndRouting()
 {
-private:
-    AmsNetId netId_;
-    AmsAddr amsAddr_;
-    uint16_t port_;
-    std::atomic<bool> stopTest_{false};
-    std::atomic<uint64_t> totalOperations_{0};
-    std::atomic<uint64_t> failedOperations_{0};
-    std::atomic<uint64_t> totalBytesTransferred_{0};
+    std::cout << "\n========== Test 1: Port Open and Routing ==========" << std::endl;
 
-public:
-    AdsLiteTester(const std::string &remoteIp, const std::string &localIp)
+    // Step 1: Open ADS port
+    g_port = AdsLitePortOpen();
+    if (g_port == 0)
     {
-        initialize(remoteIp, localIp);
+        std::cerr << "  [FAIL] Cannot open ADS port" << std::endl;
+        return false;
     }
-    ~AdsLiteTester()
+    std::cout << "  [PASS] Port: " << g_port << std::endl;
+
+    // Step 2: Initialize routing
+    AmsNetId remoteNetId = {{0}};
+    int64_t ret = AdsLiteInitRouting(TEST_REMOTE_ADDR, &remoteNetId);
+    if (ret != 0)
     {
-        cleanup();
+        std::cerr << "  [FAIL] Routing error: " << ret << std::endl;
+        AdsLitePortClose(g_port);
+        return false;
     }
+    std::cout << "  [PASS] Routing initialized" << std::endl;
 
-public:
-    void initialize(const std::string &remoteIp, const std::string &localIp)
+    // Step 3: Set target address and timeout
+    g_targetAddr.netId = remoteNetId;
+    g_targetAddr.port = TEST_PORT;
+    AdsLiteSyncSetTimeout(g_port, 1000); // Set 1 second timeout
+
+    std::cout << "  [PASS] Test passed" << std::endl;
+    return true;
+}
+
+/**
+ * @brief 测试2：通过索引组/偏移读取PLC内存
+ *
+ * 使用 AdsLiteSyncReadReq 函数直接访问PLC内存区域。
+ * 适用于访问没有符号名的内存区域。
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestMemoryRead()
+{
+    std::cout << "\n========== Test 2: Memory Read (SyncReadReq) ==========" << std::endl;
+
+    std::vector<uint8_t> buffer(4);
+    uint32_t bytesRead = 0;
+
+    int64_t ret = AdsLiteSyncReadReq(g_port, &g_targetAddr,
+                                     INDEX_GROUP, OFFSET, 4,
+                                     buffer.data(), &bytesRead);
+    if (ret == 0)
     {
-        printWithTimestamp("Initializing ADS Lite connection...");
-
-        int64_t nRet = AdsLiteGetRemoteAddress(remoteIp.c_str(), &netId_);
-        if (nRet != 0)
-        {
-            printWithTimestamp("Failed to get remote address: " + std::to_string(nRet));
-            throw std::runtime_error("Failed to get remote address");
-        }
-        std::stringstream netIdStr;
-        netIdStr << "NetId: ";
-        for (int i = 0; i < 6; ++i)
-        {
-            netIdStr << static_cast<int>(netId_.b[i]) << " ";
-        }
-        printWithTimestamp(netIdStr.str());
-        nRet = AdsLiteAddRemoteRoute(remoteIp.c_str(), localIp.c_str(), "adslite");
-        if (nRet != 0)
-        {
-            printWithTimestamp("Failed to add remote route: " + std::to_string(nRet));
-        }
-        nRet = AdsLiteAddLocalRoute(remoteIp.c_str(), &netId_);
-        if (nRet != 0)
-        {
-            printWithTimestamp("Failed to add local route: " + std::to_string(nRet));
-        }
-        port_ = AdsLitePortOpen();
-        if (port_ == 0)
-        {
-            printWithTimestamp("Failed to open port");
-            throw std::runtime_error("Failed to open port");
-        }
-        amsAddr_.netId = netId_;
-        amsAddr_.port = AMSPORT_R0_PLC_TC3;
-
-        printWithTimestamp("Initialization completed successfully");
+        std::cout << "  [PASS] Read " << bytesRead << " bytes: ";
+        for (size_t i = 0; i < bytesRead; i++)
+            std::cout << std::hex << (int)buffer[i] << " ";
+        std::cout << std::dec << std::endl;
+        return true;
     }
-    void cleanup()
+    std::cerr << "  [FAIL] Read error: " << ret << std::endl;
+    return false;
+}
+
+/**
+ * @brief 测试3：通过索引组/偏移写入PLC内存
+ *
+ * 使用 AdsLiteSyncWriteReq 函数直接写入PLC内存区域。
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestMemoryWrite()
+{
+    std::cout << "\n========== Test 3: Memory Write (SyncWriteReq) ==========" << std::endl;
+
+    // Delay to avoid InvokeId conflict with previous read
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Write test data
+    std::vector<uint8_t> buffer = {0x11, 0x22, 0x33, 0x44};
+
+    int64_t ret = AdsLiteSyncWriteReq(g_port, &g_targetAddr,
+                                      INDEX_GROUP, OFFSET, 4,
+                                      buffer.data());
+    if (ret == 0)
     {
-        printWithTimestamp("Cleaning up resources...");
-        if (port_ != 0)
+        std::cout << "  [PASS] Write 4 bytes: 11 22 33 44" << std::endl;
+        return true;
+    }
+    std::cerr << "  [FAIL] Write error: " << ret << std::endl;
+    return false;
+}
+
+/**
+ * @brief 测试4：通过变量名读取数据
+ *
+ * 使用 AdsLiteReadByName 函数，通过符号名直接读取PLC变量。
+ * 适用于读取单个变量或小型数据结构。
+ *
+ * 前提条件：PLC中需存在变量 GVL.TestVar (INT类型)
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestReadByName()
+{
+    std::cout << "\n========== Test 4: Read By Name (ReadByName) ==========" << std::endl;
+    std::cout << "  Variable: GVL.TestVar (INT = 2 bytes)" << std::endl;
+
+    std::vector<uint8_t> buffer(2);
+    uint32_t bytesRead = 0;
+
+    int64_t ret = AdsLiteReadByName(g_port, &g_targetAddr,
+                                    "GVL.TestVar",
+                                    buffer.data(), 2,
+                                    &bytesRead);
+    if (ret == 0)
+    {
+        // Convert bytes to INT16
+        int16_t value = *reinterpret_cast<int16_t *>(buffer.data());
+        std::cout << "  [PASS] Value: " << value << std::endl;
+        return true;
+    }
+    std::cerr << "  [FAIL] Error: " << ret << " (variable not found or inaccessible)" << std::endl;
+    return false;
+}
+
+/**
+ * @brief 测试5：通过变量名写入数据
+ *
+ * 使用 AdsLiteWriteByName 函数，通过符号名直接写入PLC变量。
+ *
+ * 前提条件：PLC中需存在变量 GVL.TestVar (INT类型)
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestWriteByName()
+{
+    std::cout << "\n========== Test 5: Write By Name (WriteByName) ==========" << std::endl;
+    std::cout << "  Variable: GVL.TestVar (INT = 2 bytes)" << std::endl;
+
+    int16_t value = 9999;
+    std::vector<uint8_t> buffer(2);
+    buffer[0] = static_cast<uint8_t>(value & 0xFF);        // Low byte
+    buffer[1] = static_cast<uint8_t>((value >> 8) & 0xFF); // High byte
+
+    int64_t ret = AdsLiteWriteByName(g_port, &g_targetAddr,
+                                     "GVL.TestVar",
+                                     buffer.data(), 2);
+    if (ret == 0)
+    {
+        std::cout << "  [PASS] Value: " << value << std::endl;
+        return true;
+    }
+    std::cerr << "  [FAIL] Error: " << ret << " (variable not found or inaccessible)" << std::endl;
+    return false;
+}
+
+/**
+ * @brief 测试6：通过句柄读取数据
+ *
+ * 使用 AdsLiteGetSymbolHandle 获取变量句柄，然后用句柄读取数据。
+ * 适用于需要频繁读取同一变量的场景（比按名读取更高效）。
+ *
+ * 流程：
+ *   1. 获取变量句柄
+ *   2. 用句柄读取数据
+ *   3. 释放句柄
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestReadByHandle()
+{
+    std::cout << "\n========== Test 6: Read By Handle (ReadByHandle) ==========" << std::endl;
+
+    // Step 1: Get handle
+    uint32_t handle = 0;
+    int64_t ret = AdsLiteGetSymbolHandle(g_port, &g_targetAddr,
+                                         "GVL.TestVar", &handle);
+    if (ret != 0)
+    {
+        std::cerr << "  [FAIL] Get handle error: " << ret << std::endl;
+        return false;
+    }
+    std::cout << "  [PASS] Handle: " << handle << std::endl;
+
+    // Step 2: Read data using handle
+    std::vector<uint8_t> buffer(2);
+    uint32_t bytesRead = 0;
+    ret = AdsLiteReadByHandle(g_port, &g_targetAddr, handle,
+                              buffer.data(), 2, &bytesRead);
+    if (ret == 0)
+    {
+        int16_t value = *reinterpret_cast<int16_t *>(buffer.data());
+        std::cout << "  [PASS] Value: " << value << std::endl;
+    }
+    else
+    {
+        std::cerr << "  [FAIL] Read error: " << ret << std::endl;
+    }
+
+    // Step 3: Release handle
+    AdsLiteReleaseSymbolHandle(g_port, &g_targetAddr, handle);
+
+    return (ret == 0);
+}
+
+/**
+ * @brief 测试7：通过句柄写入数据
+ *
+ * 使用句柄写入数据，比按名称写入更高效。
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestWriteByHandle()
+{
+    std::cout << "\n========== Test 7: Write By Handle (WriteByHandle) ==========" << std::endl;
+
+    // Step 1: Get handle
+    uint32_t handle = 0;
+    int64_t ret = AdsLiteGetSymbolHandle(g_port, &g_targetAddr,
+                                         "GVL.TestVar", &handle);
+    if (ret != 0)
+    {
+        std::cerr << "  [FAIL] Get handle error: " << ret << std::endl;
+        return false;
+    }
+    std::cout << "  [PASS] Handle: " << handle << std::endl;
+
+    // Step 2: Write data using handle
+    int16_t value = 11111;
+    std::vector<uint8_t> buffer(2);
+    buffer[0] = static_cast<uint8_t>(value & 0xFF);
+    buffer[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+
+    ret = AdsLiteWriteByHandle(g_port, &g_targetAddr, handle,
+                               buffer.data(), 2);
+    if (ret == 0)
+    {
+        std::cout << "  [PASS] Value: " << value << std::endl;
+    }
+    else
+    {
+        std::cerr << "  [FAIL] Write error: " << ret << std::endl;
+    }
+
+    // Step 3: Release handle
+    AdsLiteReleaseSymbolHandle(g_port, &g_targetAddr, handle);
+
+    return (ret == 0);
+}
+
+/**
+ * @brief 测试8：读取ADS设备状态
+ *
+ * 使用 AdsLiteSyncReadStateReq 读取ADS设备的状态信息。
+ *
+ * 返回值说明：
+ *   - ADS State: 0=无效, 1=空闲, 4=运行, 5=停止等
+ *   - Device State: 设备特定状态
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestReadState()
+{
+    std::cout << "\n========== Test 8: Read Device State (ReadState) ==========" << std::endl;
+
+    uint16_t adsState = 0, deviceState = 0;
+
+    int64_t ret = AdsLiteSyncReadStateReq(g_port, &g_targetAddr,
+                                          &adsState, &deviceState);
+    if (ret == 0)
+    {
+        std::cout << "  [PASS] ADS State: " << adsState
+                  << ", Device State: " << deviceState << std::endl;
+        std::cout << "  Note: ADS State 5=Run" << std::endl;
+        return true;
+    }
+    std::cerr << "  [FAIL] Read state error: " << ret << std::endl;
+    return false;
+}
+
+// ============================================================================
+// 数组读写测试
+// ============================================================================
+
+/**
+ * @brief 测试9：读取32字节数组
+ *
+ * 读取PLC中的32字节数组变量。
+ *
+ * 前提条件：PLC中需存在变量 GVL.Perf_32B (ARRAY [0..31] OF BYTE)
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestReadArray32B()
+{
+    std::cout << "\n========== Test 9: Read 32-Byte Array ==========" << std::endl;
+    std::cout << "  Variable: GVL.Perf_32B (ARRAY [0..31] OF BYTE)" << std::endl;
+    std::cout << "  Size: 32 bytes" << std::endl;
+
+    std::vector<uint8_t> buffer(SIZE_32B);
+    uint32_t bytesRead = 0;
+
+    int64_t ret = AdsLiteReadByName(g_port, &g_targetAddr,
+                                    "GVL.Perf_32B",
+                                    buffer.data(), SIZE_32B,
+                                    &bytesRead);
+    if (ret == 0)
+    {
+        std::cout << "  [PASS] Read " << bytesRead << " bytes" << std::endl;
+        std::cout << "  First 8 bytes: ";
+        for (size_t i = 0; i < std::min(bytesRead, (uint32_t)8); i++)
         {
-            AdsLitePortClose(port_);
+            std::cout << std::hex << (int)buffer[i] << " ";
         }
-        AdsLiteDeleteLocalRoute(&netId_);
+        std::cout << std::dec << "..." << std::endl;
+        return true;
     }
-    std::string getTimestamp()
+    std::cerr << "  [FAIL] Error: " << ret << " (variable not found)" << std::endl;
+    return false;
+}
+
+/**
+ * @brief 测试10：写入32字节数组
+ *
+ * 向PLC中的32字节数组写入测试数据。
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestWriteArray32B()
+{
+    std::cout << "\n========== Test 10: Write 32-Byte Array ==========" << std::endl;
+    std::cout << "  Variable: GVL.Perf_32B (ARRAY [0..31] OF BYTE)" << std::endl;
+    std::cout << "  Data: 0x00-0x1F (incremental)" << std::endl;
+
+    std::vector<uint8_t> buffer(SIZE_32B);
+    for (size_t i = 0; i < SIZE_32B; i++)
     {
-        auto now = std::chrono::system_clock::now();
-        auto now_time_t = std::chrono::system_clock::to_time_t(now);
-        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          now.time_since_epoch()) %
-                      1000;
-
-        std::stringstream ss;
-
-#ifdef _WIN32
-        std::tm time_info;
-        localtime_s(&time_info, &now_time_t);
-        ss << "[" << std::put_time(&time_info, "%Y-%m-%d %H:%M:%S");
-#else
-        ss << "[" << std::put_time(std::localtime(&now_time_t), "%Y-%m-%d %H:%M:%S");
-#endif
-
-        ss << "." << std::setfill('0') << std::setw(3) << now_ms.count() << "]";
-        return ss.str();
+        buffer[i] = static_cast<uint8_t>(i); // Fill with 0x00, 0x01, 0x02, ... 0x1F
     }
-    void printWithTimestamp(const std::string &message)
+
+    int64_t ret = AdsLiteWriteByName(g_port, &g_targetAddr,
+                                     "GVL.Perf_32B",
+                                     buffer.data(), SIZE_32B);
+    if (ret == 0)
     {
-        std::cout << getTimestamp() << " " << message << std::endl;
+        std::cout << "  [PASS] Write 32 bytes" << std::endl;
+        return true;
     }
-    template <typename Func>
-    std::pair<int64_t, std::chrono::microseconds> measureOperation(Func &&operation)
+    std::cerr << "  [FAIL] Error: " << ret << " (variable not found)" << std::endl;
+    return false;
+}
+
+/**
+ * @brief 测试11：读取256字节数组
+ *
+ * 读取PLC中的256字节数组变量，测试大数据量传输。
+ *
+ * 前提条件：PLC中需存在变量 GVL.Perf_256B (ARRAY [0..255] OF BYTE)
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestReadArray256B()
+{
+    std::cout << "\n========== Test 11: Read 256-Byte Array ==========" << std::endl;
+    std::cout << "  Variable: GVL.Perf_256B (ARRAY [0..255] OF BYTE)" << std::endl;
+    std::cout << "  Size: 256 bytes" << std::endl;
+
+    std::vector<uint8_t> buffer(SIZE_256B);
+    uint32_t bytesRead = 0;
+
+    int64_t ret = AdsLiteReadByName(g_port, &g_targetAddr,
+                                    "GVL.Perf_256B",
+                                    buffer.data(), SIZE_256B,
+                                    &bytesRead);
+    if (ret == 0)
+    {
+        std::cout << "  [PASS] Read " << bytesRead << " bytes" << std::endl;
+        std::cout << "  First 8 bytes: ";
+        for (size_t i = 0; i < std::min(bytesRead, (uint32_t)8); i++)
+        {
+            std::cout << std::hex << (int)buffer[i] << " ";
+        }
+        std::cout << std::dec << "..." << std::endl;
+        return true;
+    }
+    std::cerr << "  [FAIL] Error: " << ret << " (variable not found)" << std::endl;
+    return false;
+}
+
+/**
+ * @brief 测试12：写入256字节数组
+ *
+ * 向PLC中的256字节数组写入测试数据。
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestWriteArray256B()
+{
+    std::cout << "\n========== Test 12: Write 256-Byte Array ==========" << std::endl;
+    std::cout << "  Variable: GVL.Perf_256B (ARRAY [0..255] OF BYTE)" << std::endl;
+    std::cout << "  Data: 0x00, 0x02, 0x04... (even values)" << std::endl;
+
+    std::vector<uint8_t> buffer(SIZE_256B);
+    for (size_t i = 0; i < SIZE_256B; i++)
+    {
+        buffer[i] = static_cast<uint8_t>(i * 2); // Fill with 0x00, 0x02, 0x04, ... 0x1FE
+    }
+
+    int64_t ret = AdsLiteWriteByName(g_port, &g_targetAddr,
+                                     "GVL.Perf_256B",
+                                     buffer.data(), SIZE_256B);
+    if (ret == 0)
+    {
+        std::cout << "  [PASS] Write 256 bytes" << std::endl;
+        return true;
+    }
+    std::cerr << "  [FAIL] Error: " << ret << " (variable not found)" << std::endl;
+    return false;
+}
+
+/**
+ * @brief 测试13：读取LREAL浮点数数组
+ *
+ * 读取PLC中的33元素LREAL浮点数数组。
+ * LREAL是64位双精度浮点数，每个元素8字节，总共264字节。
+ *
+ * 前提条件：PLC中需存在变量 GVL.Perf_32F (ARRAY [0..32] OF LREAL)
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestReadArray32F()
+{
+    std::cout << "\n========== Test 13: Read LREAL Array (32F) ==========" << std::endl;
+    std::cout << "  Variable: GVL.Perf_32F (ARRAY [0..32] OF LREAL)" << std::endl;
+    std::cout << "  Size: 33 elements x 8 bytes = 264 bytes" << std::endl;
+
+    std::vector<uint8_t> buffer(SIZE_32F);
+    uint32_t bytesRead = 0;
+
+    int64_t ret = AdsLiteReadByName(g_port, &g_targetAddr,
+                                    "GVL.Perf_32F",
+                                    buffer.data(), SIZE_32F,
+                                    &bytesRead);
+    if (ret == 0)
+    {
+        std::cout << "  [PASS] Read " << bytesRead << " bytes" << std::endl;
+        // Print first 3 floating point values
+        std::cout << "  First 3 values: ";
+        double *values = reinterpret_cast<double *>(buffer.data());
+        std::cout << std::fixed << std::setprecision(6);
+        for (int i = 0; i < std::min(3, static_cast<int>(bytesRead / 8)); i++)
+        {
+            std::cout << values[i] << " ";
+        }
+        std::cout << std::dec << "..." << std::endl;
+        return true;
+    }
+    std::cerr << "  [FAIL] Error: " << ret << " (variable not found)" << std::endl;
+    return false;
+}
+
+/**
+ * @brief 测试14：写入LREAL浮点数数组
+ *
+ * 向PLC中的33元素LREAL浮点数数组写入测试数据。
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestWriteArray32F()
+{
+    std::cout << "\n========== Test 14: Write LREAL Array (32F) ==========" << std::endl;
+    std::cout << "  Variable: GVL.Perf_32F (ARRAY [0..32] OF LREAL)" << std::endl;
+    std::cout << "  Data: 0.0, 1.0, 2.0, ... 32.0" << std::endl;
+
+    std::vector<uint8_t> buffer(SIZE_32F);
+    double *values = reinterpret_cast<double *>(buffer.data());
+    for (size_t i = 0; i < SIZE_32F / 8; i++)
+    {
+        values[i] = static_cast<double>(i); // Fill with 0.0, 1.0, 2.0, ... 32.0
+    }
+
+    int64_t ret = AdsLiteWriteByName(g_port, &g_targetAddr,
+                                     "GVL.Perf_32F",
+                                     buffer.data(), SIZE_32F);
+    if (ret == 0)
+    {
+        std::cout << "  [PASS] Write 264 bytes (33 LREAL values)" << std::endl;
+        return true;
+    }
+    std::cerr << "  [FAIL] Error: " << ret << " (variable not found)" << std::endl;
+    return false;
+}
+
+// ============================================================================
+// 性能测试
+// ============================================================================
+
+/**
+ * @brief 性能测试1：内存读取速度
+ *
+ * 多次读取PLC内存，测量平均响应时间。
+ */
+bool TestPerfMemoryRead()
+{
+    std::cout << "\n========== Performance: Memory Read (4B) ==========" << std::endl;
+    std::cout << "  Iterations: " << PERF_ITERATIONS << std::endl;
+
+    std::vector<double> times;
+    times.reserve(PERF_ITERATIONS);
+    std::vector<uint8_t> buffer(4);
+    uint32_t bytesRead = 0;
+
+    // Formal test
+    for (int i = 0; i < PERF_ITERATIONS; i++)
     {
         auto start = std::chrono::high_resolution_clock::now();
-        int64_t result = operation();
+        int64_t ret = AdsLiteSyncReadReq(g_port, &g_targetAddr, INDEX_GROUP, OFFSET, 4, buffer.data(), &bytesRead);
         auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 
-        return {result, duration};
+        if (ret != 0)
+        {
+            std::cerr << "  [FAIL] Read error: " << ret << std::endl;
+            return false;
+        }
+
+        double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+        times.push_back(elapsed);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(5)); // Avoid InvokeId conflict
     }
 
-public:
-    std::pair<int64_t, std::chrono::microseconds> readData(uint32_t indexGroup, uint32_t indexOffset,
-                                                           std::vector<uint8_t> &buffer)
+    // Statistics
+    double minTime = *std::min_element(times.begin(), times.end());
+    double maxTime = *std::max_element(times.begin(), times.end());
+    double avgTime = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
+
+    PrintPerfResult("SyncReadReq (4B)", avgTime, minTime, maxTime);
+    std::cout << "  [PASS]" << std::endl;
+    return true;
+}
+
+/**
+ * @brief 性能测试2：内存写入速度
+ */
+bool TestPerfMemoryWrite()
+{
+    std::cout << "\n========== Performance: Memory Write (4B) ==========" << std::endl;
+    std::cout << "  Iterations: " << PERF_ITERATIONS << std::endl;
+
+    std::vector<double> times;
+    times.reserve(PERF_ITERATIONS);
+    std::vector<uint8_t> buffer = {0xAA, 0xBB, 0xCC, 0xDD};
+
+    // Formal test
+    for (int i = 0; i < PERF_ITERATIONS; i++)
     {
-        uint32_t len = 0;
-        auto resultPair = measureOperation([&]()
-                                           { return AdsLiteSyncReadReq(port_, &amsAddr_, indexGroup, indexOffset,
-                                                                       buffer.size(), buffer.data(), &len); });
+        auto start = std::chrono::high_resolution_clock::now();
+        int64_t ret = AdsLiteSyncWriteReq(g_port, &g_targetAddr, INDEX_GROUP, OFFSET, 4, buffer.data());
+        auto end = std::chrono::high_resolution_clock::now();
 
-        totalOperations_++;
-        totalBytesTransferred_ += buffer.size();
-        if (resultPair.first != 0)
+        if (ret != 0)
         {
-            failedOperations_++;
+            std::cerr << "  [FAIL] Write error: " << ret << std::endl;
+            return false;
         }
 
-        return resultPair;
+        double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+        times.push_back(elapsed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    std::pair<int64_t, std::chrono::microseconds> writeData(uint32_t indexGroup, uint32_t indexOffset,
-                                                            const std::vector<uint8_t> &buffer)
+
+    double minTime = *std::min_element(times.begin(), times.end());
+    double maxTime = *std::max_element(times.begin(), times.end());
+    double avgTime = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
+
+    PrintPerfResult("SyncWriteReq (4B)", avgTime, minTime, maxTime);
+    std::cout << "  [PASS]" << std::endl;
+    return true;
+}
+
+/**
+ * @brief 性能测试3：按名称读取速度
+ */
+bool TestPerfReadByName()
+{
+    std::cout << "\n========== Performance: Read By Name (2B INT) ==========" << std::endl;
+    std::cout << "  Variable: GVL.TestVar" << std::endl;
+    std::cout << "  Iterations: " << PERF_ITERATIONS << std::endl;
+
+    std::vector<double> times;
+    times.reserve(PERF_ITERATIONS);
+    std::vector<uint8_t> buffer(2);
+    uint32_t bytesRead = 0;
+
+    // Formal test
+    for (int i = 0; i < PERF_ITERATIONS; i++)
     {
-        auto resultPair = measureOperation([&]()
-                                           { return AdsLiteSyncWriteReq(port_, &amsAddr_, indexGroup, indexOffset,
-                                                                        buffer.size(), buffer.data()); });
+        auto start = std::chrono::high_resolution_clock::now();
+        int64_t ret = AdsLiteReadByName(g_port, &g_targetAddr, "GVL.TestVar", buffer.data(), 2, &bytesRead);
+        auto end = std::chrono::high_resolution_clock::now();
 
-        totalOperations_++;
-        totalBytesTransferred_ += buffer.size();
-        if (resultPair.first != 0)
+        if (ret != 0)
         {
-            failedOperations_++;
+            std::cerr << "  [FAIL] Read error: " << ret << std::endl;
+            return false;
         }
 
-        return resultPair;
+        double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+        times.push_back(elapsed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    void pressureTestRead(uint32_t iterations, size_t bufferSize, uint32_t delayMs = 0)
+
+    double minTime = *std::min_element(times.begin(), times.end());
+    double maxTime = *std::max_element(times.begin(), times.end());
+    double avgTime = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
+
+    PrintPerfResult("ReadByName (2B INT)", avgTime, minTime, maxTime);
+    std::cout << "  [PASS]" << std::endl;
+    return true;
+}
+
+/**
+ * @brief 性能测试4：按名称写入速度
+ */
+bool TestPerfWriteByName()
+{
+    std::cout << "\n========== Performance: Write By Name (2B INT) ==========" << std::endl;
+    std::cout << "  Variable: GVL.TestVar" << std::endl;
+    std::cout << "  Iterations: " << PERF_ITERATIONS << std::endl;
+
+    std::vector<double> times;
+    times.reserve(PERF_ITERATIONS);
+    int16_t value = 12345;
+    std::vector<uint8_t> buffer(2);
+    buffer[0] = static_cast<uint8_t>(value & 0xFF);
+    buffer[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+
+    // Formal test
+    for (int i = 0; i < PERF_ITERATIONS; i++)
     {
-        std::vector<uint8_t> buffer(bufferSize);
-        uint64_t totalReadTime = 0;
-        uint64_t successfulReads = 0;
-        std::stringstream startMsg;
-        startMsg << "Starting read pressure test with "
-                 << bufferSize << " bytes buffer, " << iterations << " iterations";
-        printWithTimestamp(startMsg.str());
-        for (uint32_t i = 0; i < iterations && !stopTest_; ++i)
-        {
-            auto resultPair = readData(0x4020, 0x7d0, buffer);
+        auto start = std::chrono::high_resolution_clock::now();
+        int64_t ret = AdsLiteWriteByName(g_port, &g_targetAddr, "GVL.TestVar", buffer.data(), 2);
+        auto end = std::chrono::high_resolution_clock::now();
 
-            totalReadTime += resultPair.second.count();
-            if (resultPair.first == 0)
-            {
-                successfulReads++;
-                if (i % 100 == 0)
-                {
-                    std::stringstream msg;
-                    double speed = (bufferSize * 1e6) / (resultPair.second.count() * 1024.0);
-                    msg << "Read iteration " << i
-                        << " - Time: " << resultPair.second.count() << "us"
-                        << " - Speed: " << std::fixed << std::setprecision(2) << speed << " KB/s";
-                    printWithTimestamp(msg.str());
-                }
-            }
-            else
-            {
-                std::stringstream errMsg;
-                errMsg << "Read failed at iteration " << i << ": " << resultPair.first;
-                printWithTimestamp(errMsg.str());
-            }
-
-            if (delayMs > 0)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-            }
-        }
-        if (successfulReads > 0)
+        if (ret != 0)
         {
-            double avgTime = totalReadTime / static_cast<double>(successfulReads);
-            std::stringstream msg;
-            msg << "Read test completed - Avg time: " << std::fixed << std::setprecision(2) << avgTime << "us";
-            printWithTimestamp(msg.str());
+            std::cerr << "  [FAIL] Write error: " << ret << std::endl;
+            return false;
         }
+
+        double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+        times.push_back(elapsed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    void pressureTestWrite(uint32_t iterations, size_t bufferSize, uint32_t delayMs = 0)
+
+    double minTime = *std::min_element(times.begin(), times.end());
+    double maxTime = *std::max_element(times.begin(), times.end());
+    double avgTime = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
+
+    PrintPerfResult("WriteByName (2B INT)", avgTime, minTime, maxTime);
+    std::cout << "  [PASS]" << std::endl;
+    return true;
+}
+
+// ============================================================================
+// 高级功能测试
+// ============================================================================
+
+/**
+ * @brief 测试16：异步读取操作
+ *
+ * 使用 AdsLiteAsyncReadReq 和 AdsLiteAsyncWait 函数进行异步读取。
+ * 异步操作允许在等待响应时执行其他任务。
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestAsyncRead()
+{
+    std::cout << "\n========== Test 16: Async Read (AsyncReadReq) ==========" << std::endl;
+
+    std::vector<uint8_t> buffer(2);
+    uint32_t bytesRead = 0;
+    uint32_t invokeId = 0;
+
+    // Step 1: Submit async read request
+    int64_t ret = AdsLiteAsyncReadReq(g_port, &g_targetAddr,
+                                      0x4020, 0, // IndexGroup, IndexOffset
+                                      2,         // Read 2 bytes
+                                      buffer.data(),
+                                      &bytesRead,
+                                      &invokeId);
+    if (ret != 0)
     {
-        std::vector<uint8_t> testData(bufferSize);
-        for (size_t i = 0; i < testData.size(); ++i)
-        {
-            testData[i] = static_cast<uint8_t>(i % 256);
-        }
-        uint64_t totalWriteTime = 0;
-        uint64_t successfulWrites = 0;
-        std::stringstream startMsg;
-        startMsg << "Starting write pressure test with "
-                 << bufferSize << " bytes buffer, " << iterations << " iterations";
-        printWithTimestamp(startMsg.str());
-        for (uint32_t i = 0; i < iterations && !stopTest_; ++i)
-        {
-            testData[0] = static_cast<uint8_t>(i % 256);
-
-            auto resultPair = writeData(0x4020, 0x7d0, testData);
-
-            totalWriteTime += resultPair.second.count();
-            if (resultPair.first == 0)
-            {
-                successfulWrites++;
-                if (i % 100 == 0)
-                {
-                    std::stringstream msg;
-                    double speed = (bufferSize * 1e6) / (resultPair.second.count() * 1024.0);
-                    msg << "Write iteration " << i
-                        << " - Time: " << resultPair.second.count() << "us"
-                        << " - Speed: " << std::fixed << std::setprecision(2) << speed << " KB/s";
-                    printWithTimestamp(msg.str());
-                }
-            }
-            else
-            {
-                std::stringstream errMsg;
-                errMsg << "Write failed at iteration " << i << ": " << resultPair.first;
-                printWithTimestamp(errMsg.str());
-            }
-
-            if (delayMs > 0)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-            }
-        }
-        if (successfulWrites > 0)
-        {
-            double avgTime = totalWriteTime / static_cast<double>(successfulWrites);
-            std::stringstream msg;
-            msg << "Write test completed - Avg time: " << std::fixed << std::setprecision(2) << avgTime << "us";
-            printWithTimestamp(msg.str());
-        }
+        std::cerr << "  [FAIL] Async read request error: " << ret << std::endl;
+        return false;
     }
-    void mixedPressureTest(uint32_t iterations, size_t bufferSize, uint32_t delayMs = 0)
+    std::cout << "  [PASS] Async request submitted, invokeId: " << invokeId << std::endl;
+
+    // Step 2: Wait for completion
+    ret = AdsLiteAsyncWait(g_port, invokeId, 1000); // 1 second timeout
+    if (ret == 0)
     {
-        std::vector<uint8_t> readBuffer(bufferSize);
-        std::vector<uint8_t> writeBuffer(bufferSize);
-
-        for (size_t i = 0; i < writeBuffer.size(); ++i)
-        {
-            writeBuffer[i] = static_cast<uint8_t>(i % 256);
-        }
-        uint64_t totalReadTime = 0, totalWriteTime = 0;
-        uint64_t successfulReads = 0, successfulWrites = 0;
-        std::stringstream startMsg;
-        startMsg << "Starting mixed test with "
-                 << bufferSize << " bytes buffer, " << iterations << " iterations";
-        printWithTimestamp(startMsg.str());
-        for (uint32_t i = 0; i < iterations && !stopTest_; ++i)
-        {
-            if (i % 2 == 0)
-            {
-                auto resultPair = readData(0x4020, 0x7d0, readBuffer);
-                totalReadTime += resultPair.second.count();
-                if (resultPair.first == 0)
-                    successfulReads++;
-
-                if (resultPair.first != 0 && i % 10 == 0)
-                {
-                    std::stringstream errMsg;
-                    errMsg << "Mixed test read failed at iteration " << i << ": " << resultPair.first;
-                    printWithTimestamp(errMsg.str());
-                }
-            }
-            else
-            {
-                writeBuffer[0] = static_cast<uint8_t>(i % 256);
-                auto resultPair = writeData(0x4020, 0x7d0, writeBuffer);
-                totalWriteTime += resultPair.second.count();
-                if (resultPair.first == 0)
-                    successfulWrites++;
-
-                if (resultPair.first != 0 && i % 10 == 0)
-                {
-                    std::stringstream errMsg;
-                    errMsg << "Mixed test write failed at iteration " << i << ": " << resultPair.first;
-                    printWithTimestamp(errMsg.str());
-                }
-            }
-            if (i % 200 == 0)
-            {
-                std::stringstream msg;
-                msg << "Mixed test iteration " << i;
-                printWithTimestamp(msg.str());
-            }
-
-            if (delayMs > 0)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-            }
-        }
-        if (successfulReads > 0)
-        {
-            double avgReadTime = totalReadTime / static_cast<double>(successfulReads);
-            std::stringstream msg;
-            msg << "Mixed test read avg time: " << std::fixed << std::setprecision(2) << avgReadTime << "us";
-            printWithTimestamp(msg.str());
-        }
-        if (successfulWrites > 0)
-        {
-            double avgWriteTime = totalWriteTime / static_cast<double>(successfulWrites);
-            std::stringstream msg;
-            msg << "Mixed test write avg time: " << std::fixed << std::setprecision(2) << avgWriteTime << "us";
-            printWithTimestamp(msg.str());
-        }
+        std::cout << "  [PASS] Async read completed, bytes: " << bytesRead << std::endl;
+        return true;
     }
-    void stopTest()
-    {
-        stopTest_ = true;
-    }
-    void printStatistics()
-    {
-        std::cout << std::endl;
-        printWithTimestamp("=== Test Statistics ===");
+    std::cerr << "  [FAIL] Async wait error: " << ret << std::endl;
+    return false;
+}
 
-        std::stringstream stats;
-        stats << "Total operations: " << totalOperations_;
-        printWithTimestamp(stats.str());
+/**
+ * @brief 测试17：关闭ADS路由
+ *
+ * 使用 AdsLiteShutdownRouting 清理路由表资源。
+ * 这是程序退出前的必要清理步骤。
+ *
+ * @return 测试通过返回true，失败返回false
+ */
+bool TestShutdownRouting()
+{
+    std::cout << "\n========== Test 17: Shutdown Routing (ShutdownRouting) ==========" << std::endl;
 
-        stats.str("");
-        stats << "Failed operations: " << failedOperations_;
-        printWithTimestamp(stats.str());
+    // Shutdown routing
+    AdsLiteShutdownRouting(&g_targetAddr.netId);
+    std::cout << "  [PASS] Routing shutdown completed" << std::endl;
 
-        stats.str("");
-        stats << "Total bytes transferred: " << totalBytesTransferred_ << " bytes";
-        printWithTimestamp(stats.str());
+    // Note: After shutdown, port should still be open but routing is cleaned up
+    std::cout << "  Note: Port " << g_port << " still open (will be closed in cleanup)" << std::endl;
 
-        stats.str("");
-        double successRate = 100.0 * (totalOperations_ - failedOperations_) / totalOperations_;
-        stats << "Success rate: " << std::fixed << std::setprecision(2) << successRate << "%";
-        printWithTimestamp(stats.str());
-    }
-};
+    return true;
+}
 
+// ============================================================================
+// 主函数
+// ============================================================================
+
+/**
+ * @brief 程序入口
+ *
+ * 执行所有测试用例并输出测试结果汇总。
+ */
 int main()
 {
-    const std::string remoteIp = "192.168.11.77";
-    const std::string localIp = "192.168.11.17";
+    std::cout << "========================================" << std::endl;
+    std::cout << "     AdsLite API Test Suite v1.0" << std::endl;
+    std::cout << "     Target: " << TEST_REMOTE_ADDR << ":" << TEST_PORT << std::endl;
+    std::cout << "========================================" << std::endl;
 
-    const size_t largeBufferSize = 1000;
+    int passed = 0, failed = 0;
 
-    try
+    // ========== Basic function tests ==========
+    if (TestPortAndRouting())
+        passed++;
+    else
+        failed++;
+
+    if (TestMemoryRead())
+        passed++;
+    else
+        failed++;
+
+    if (TestMemoryWrite())
+        passed++;
+    else
+        failed++;
+
+    if (TestReadByName())
+        passed++;
+    else
+        failed++;
+
+    if (TestWriteByName())
+        passed++;
+    else
+        failed++;
+
+    if (TestReadByHandle())
+        passed++;
+    else
+        failed++;
+
+    if (TestWriteByHandle())
+        passed++;
+    else
+        failed++;
+
+    if (TestReadState())
+        passed++;
+    else
+        failed++;
+
+    // ========== Array read/write tests ==========
+    if (TestReadArray32B())
+        passed++;
+    else
+        failed++;
+
+    if (TestWriteArray32B())
+        passed++;
+    else
+        failed++;
+
+    if (TestReadArray256B())
+        passed++;
+    else
+        failed++;
+
+    if (TestWriteArray256B())
+        passed++;
+    else
+        failed++;
+
+    // LREAL floating-point array tests
+    if (TestReadArray32F())
+        passed++;
+    else
+        failed++;
+
+    if (TestWriteArray32F())
+        passed++;
+    else
+        failed++;
+
+    // ========== Performance tests ==========
+    if (TestPerfMemoryRead())
+        passed++;
+    else
+        failed++;
+
+    if (TestPerfMemoryWrite())
+        passed++;
+    else
+        failed++;
+
+    if (TestPerfReadByName())
+        passed++;
+    else
+        failed++;
+
+    if (TestPerfWriteByName())
+        passed++;
+    else
+        failed++;
+
+    // ========== Advanced function tests ==========
+    if (TestAsyncRead())
+        passed++;
+    else
+        failed++;
+
+    if (TestShutdownRouting())
+        passed++;
+    else
+        failed++;
+
+    // ========== Cleanup ==========
+    if (g_port != 0)
     {
-        AdsLiteTester tester(remoteIp, localIp);
-
-        std::stringstream startMsg;
-        startMsg << "Starting pressure tests with " << largeBufferSize << " bytes buffer...";
-        tester.printWithTimestamp(startMsg.str());
-
-        // 大块数据读取测试
-        tester.printWithTimestamp("=== Large Buffer Read Test ===");
-        tester.pressureTestRead(800, largeBufferSize, 5);
-
-        // 大块数据写入测试
-        tester.printWithTimestamp("=== Large Buffer Write Test ===");
-        tester.pressureTestWrite(800, largeBufferSize, 10);
-
-        // 大块数据混合测试
-        tester.printWithTimestamp("=== Large Buffer Mixed Test ===");
-        tester.mixedPressureTest(800, largeBufferSize, 3);
-
-        tester.printStatistics();
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Exception occurred: " << e.what() << std::endl;
-        return 1;
+        AdsLitePortClose(g_port);
+        std::cout << "\nPort closed: " << g_port << std::endl;
     }
 
-    return 0;
+    // ========== Summary ==========
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "     Results: " << passed << "/" << (passed + failed) << " passed" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    return (failed > 0) ? 1 : 0;
 }
