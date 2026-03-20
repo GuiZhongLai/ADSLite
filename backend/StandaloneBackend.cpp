@@ -8,27 +8,46 @@
 
 int64_t StandaloneBackend::InitRouting(const char *addr, AmsNetId *ams)
 {
-    int64_t ret = GetRemoteAddress(addr, *ams);
-    if (ret != 0)
-    {
-        return ret;
-    }
+    if (!addr || !ams)
+        return ADSERR_CLIENT_INVALIDPARM;
 
-    const std::string localIp = getLocalIpForTarget(addr);
-    if (localIp.empty())
+    try
+    {
+        int64_t ret = GetRemoteAddress(addr, *ams);
+        if (ret != 0)
+            return ret;
+
+        const std::string localIp = getLocalIpForTarget(addr);
+        if (localIp.empty())
+        {
+            return ADSERR_CLIENT_ERROR;
+        }
+
+        const std::string netIdText = localIp + ".1.1";
+        const AmsNetId localNetId = AmsNetIdHelper::create(netIdText);
+
+        ret = AddRemoteRoute(addr, localNetId, localIp, "AdsLiteRoute");
+        if (ret != 0)
+            return ret;
+
+        return AddLocalRoute(*ams, addr);
+    }
+    catch (const std::system_error &)
+    {
+        return ADSERR_CLIENT_W32ERROR;
+    }
+    catch (const std::runtime_error &)
     {
         return ADSERR_CLIENT_ERROR;
     }
-
-    const std::string netIdText = localIp + ".1.1";
-    const AmsNetId localNetId = AmsNetIdHelper::create(netIdText);
-    ret = AddRemoteRoute(addr, localNetId, localIp, "AdsLiteRoute");
-    if (ret != 0)
+    catch (const std::exception &)
     {
-        return ret;
+        return ADSERR_DEVICE_TIMEOUT;
     }
-
-    return AddLocalRoute(*ams, addr);
+    catch (...)
+    {
+        return ADSERR_DEVICE_EXCEPTION;
+    }
 }
 
 void StandaloneBackend::ShutdownRouting(AmsNetId *ams)
