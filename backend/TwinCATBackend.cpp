@@ -58,18 +58,37 @@ int64_t TwinCATBackend::InitRouting(const char *addr, AmsNetId *ams)
     {
         return ADSERR_CLIENT_INVALIDPARM;
     }
-
-    const long status = AdsLiteStandaloneGetRemoteAddress(addr, *ams);
-    if (status == 0)
+    try
     {
-        LOG_INFO("TwinCATBackend::InitRouting resolved device netid");
+        const long status = AdsLiteStandaloneGetRemoteAddress(addr, *ams);
+        if (status == 0)
+        {
+            LOG_INFO("TwinCATBackend::InitRouting resolved device netid");
+        }
+        else
+        {
+            LOG_WARN("TwinCATBackend::InitRouting failed to resolve device netid");
+        }
+        return status;
     }
-    else
+    catch (const std::system_error &)
     {
-        LOG_WARN("TwinCATBackend::InitRouting failed to resolve device netid");
+        return ADSERR_CLIENT_W32ERROR;
     }
-    return status;
+    catch (const std::runtime_error &)
+    {
+        return ADSERR_CLIENT_ERROR;
+    }
+    catch (const std::exception &)
+    {
+        return ADSERR_DEVICE_TIMEOUT;
+    }
+    catch (...)
+    {
+        return ADSERR_DEVICE_EXCEPTION;
+    }
 }
+
 
 void TwinCATBackend::ShutdownRouting(AmsNetId *ams)
 {
