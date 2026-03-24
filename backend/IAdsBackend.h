@@ -8,6 +8,7 @@ struct IAdsBackend
 {
     virtual ~IAdsBackend() {}
 
+    virtual int64_t GetDeviceNetId(const char *addr, AmsNetId *ams) = 0;
     virtual int64_t InitRouting(const char *addr, AmsNetId *ams) = 0;
     virtual void ShutdownRouting(AmsNetId *ams) = 0;
 

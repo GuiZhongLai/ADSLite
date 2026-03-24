@@ -52,6 +52,15 @@ const char *TwinCATBackend::AvailabilityReason() const
     return reason.c_str();
 }
 
+int64_t TwinCATBackend::GetDeviceNetId(const char *addr, AmsNetId *ams)
+{
+    if (!addr || !ams)
+    {
+        return ADSERR_CLIENT_INVALIDPARM;
+    }
+    return AdsLiteStandaloneGetRemoteAddress(addr, *ams);
+}
+
 int64_t TwinCATBackend::InitRouting(const char *addr, AmsNetId *ams)
 {
     if (!addr || !ams)

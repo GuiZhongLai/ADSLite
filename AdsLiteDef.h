@@ -339,6 +339,37 @@ extern "C"
     };
 
     /**
+     * @brief 文件查找结果结构
+     */
+    struct AdsLiteFileFindData
+    {
+        uint32_t fileHandle;
+        uint32_t fileAttributes;
+        uint64_t reserved1[5];
+        char fileName[260];
+        char reserved2[14];
+        uint16_t reserved3;
+    };
+
+    /**
+     * @brief 文件服务打开标志位
+     */
+    enum AdsLiteFileOpenFlags
+    {
+        ADSLITE_FOPEN_READ = 1u << 0,
+        ADSLITE_FOPEN_WRITE = 1u << 1,
+        ADSLITE_FOPEN_APPEND = 1u << 2,
+        ADSLITE_FOPEN_PLUS = 1u << 3,
+        ADSLITE_FOPEN_BINARY = 1u << 4,
+        ADSLITE_FOPEN_TEXT = 1u << 5,
+        ADSLITE_FOPEN_ENSURE_DIR = 1u << 6,
+        ADSLITE_FOPEN_ENABLE_DIR = 1u << 7,
+        ADSLITE_FOPEN_OVERWRITE = 1u << 8,
+        ADSLITE_FOPEN_OVERWRITE_RENAME = 1u << 9,
+        ADSLITE_FOPEN_SHIFT_OPENPATH = 16u
+    };
+
+    /**
      * @brief 系统服务索引组枚举
      */
     enum nSystemServiceIndexGroups

@@ -17,6 +17,8 @@
 
 #include "AdsLiteDef.h"
 
+#include <stddef.h>
+
 #if defined(_WIN32) || defined(_WIN64)
 #ifdef ADS_LITE_BUILD_DLL
 #define ADS_LITE_API __declspec(dllexport)
@@ -49,6 +51,23 @@ extern "C"
      *         - 其他值: 参见 ADS Return Codes
      */
     ADS_LITE_API int64_t AdsLiteGetDeviceNetId(const char *addr, AmsNetId *ams);
+
+    /**
+     * @brief 获取目标设备 SystemId（GUID 字符串）
+     *
+     * 通过固定索引组读取 16 字节 SystemId，并格式化为
+     * "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"。
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[out] pSystemId 输出字符串缓冲区
+     * @param[in] systemIdBufferLength 缓冲区长度，至少 37 字节
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteGetSystemId(uint16_t port,
+                                            const AmsAddr *pAddr,
+                                            char *pSystemId,
+                                            uint32_t systemIdBufferLength);
 
     /**
      * @brief 初始化 ADS 路由
@@ -292,6 +311,160 @@ extern "C"
                                                     uint16_t deviceState,
                                                     uint32_t length,
                                                     const void *pData);
+
+    // =========================================================================
+    // 文件服务与程序更新辅助 API
+    // =========================================================================
+
+    /**
+     * @brief 打开目标设备上的文件
+     *
+     * 通过 ADS 系统服务打开远端文件并返回文件句柄。
+        * 打开标志位定义见 AdsLiteDef.h::AdsLiteFileOpenFlags。
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[in] remotePath 远端文件路径
+     * @param[in] openFlags 打开标志，建议使用 AdsLiteFileOpenFlags 组合
+     *                    例如覆盖写入使用：
+     *                    ADSLITE_FOPEN_WRITE | ADSLITE_FOPEN_BINARY |
+     *                    ADSLITE_FOPEN_PLUS | ADSLITE_FOPEN_ENSURE_DIR
+     * @param[out] pFileHandle 文件句柄
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteFileOpen(uint16_t port,
+                                         const AmsAddr *pAddr,
+                                         const char *remotePath,
+                                         uint32_t openFlags,
+                                         uint32_t *pFileHandle);
+
+    /**
+     * @brief 关闭目标设备上的文件句柄
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[in] fileHandle 文件句柄
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteFileClose(uint16_t port,
+                                          const AmsAddr *pAddr,
+                                          uint32_t fileHandle);
+
+    /**
+     * @brief 读取目标设备文件内容
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[in] fileHandle 文件句柄
+     * @param[in] length 读取字节数
+     * @param[out] pData 读取缓冲区
+     * @param[out] pBytesRead 实际读取字节数（可为 nullptr）
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteFileRead(uint16_t port,
+                                         const AmsAddr *pAddr,
+                                         uint32_t fileHandle,
+                                         uint32_t length,
+                                         void *pData,
+                                         uint32_t *pBytesRead);
+
+    /**
+     * @brief 向目标设备文件写入内容
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[in] fileHandle 文件句柄
+     * @param[in] pData 待写入数据
+     * @param[in] length 写入字节数
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteFileWrite(uint16_t port,
+                                          const AmsAddr *pAddr,
+                                          uint32_t fileHandle,
+                                          const void *pData,
+                                          uint32_t length);
+
+    /**
+     * @brief 删除目标设备上的文件
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[in] remotePath 远端文件路径
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteFileDelete(uint16_t port,
+                                           const AmsAddr *pAddr,
+                                           const char *remotePath);
+
+    /**
+     * @brief 创建目标设备上的目录
+     *
+     * 该接口通过文件服务保证目录存在，适用于部署前预创建目录。
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[in] remoteDirPath 远端目录路径
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteDirCreate(uint16_t port,
+                                          const AmsAddr *pAddr,
+                                          const char *remoteDirPath);
+
+    /**
+     * @brief 删除目标设备上的目录内容，并可选删除目录本身
+     *
+     * 内部先递归删除目录下所有文件与子目录，再根据 deleteDirSelf
+     * 决定是否删除 remoteDirPath 本身。目录不存在返回成功。
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[in] remoteDirPath 远端目录路径
+     * @param[in] deleteDirSelf true=删除目录本身，false=仅清空目录内容
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteDirDelete(uint16_t port,
+                                          const AmsAddr *pAddr,
+                                          const char *remoteDirPath,
+                                          bool deleteDirSelf);
+
+    /**
+     * @brief 重命名目标设备上的文件
+     *
+     * 当前实现采用“复制到新路径后删除旧文件”的语义。
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[in] sourcePath 原始文件路径
+     * @param[in] targetPath 目标文件路径
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteFileRename(uint16_t port,
+                                           const AmsAddr *pAddr,
+                                           const char *sourcePath,
+                                           const char *targetPath);
+
+    /**
+     * @brief 获取目录下文件名列表
+     *
+     * 内部会使用文件服务遍历接口聚合结果。
+     * 结果以 '\n' 分隔写入缓冲区。
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[in] pathPattern 路径或通配路径（例如 "C:/TwinCAT/3.1/Boot/*"）
+     * @param[out] pNameBuffer 输出缓冲区（可为 nullptr，用于仅查询所需长度）
+     * @param[in] nameBufferLength 输出缓冲区长度
+     * @param[out] pBytesRequired 需要的总字节数（含末尾 '\0'）
+     * @param[out] pItemCount 文件项数量
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteFileList(uint16_t port,
+                                         const AmsAddr *pAddr,
+                                         const char *pathPattern,
+                                         char *pNameBuffer,
+                                         uint32_t nameBufferLength,
+                                         uint32_t *pBytesRequired,
+                                         uint32_t *pItemCount);
 
     // =========================================================================
     // 异步操作 API

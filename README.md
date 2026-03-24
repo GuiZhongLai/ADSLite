@@ -117,6 +117,21 @@ $env:ADSLITE_BACKEND = "twincat"     # 或 standalone / auto
 - 状态控制：`AdsLiteSyncReadStateReq` / `AdsLiteSyncWriteControlReq`
 - 变量读写：`AdsLiteReadByName` / `AdsLiteWriteByName` / `AdsLiteReadByHandle` / `AdsLiteWriteByHandle`
 
+### 文件目录删除说明
+
+- 目录删除统一使用：`AdsLiteDirDelete(port, pAddr, remoteDirPath, deleteDirSelf)`
+- 内部行为：先递归删除目录内容，再根据 `deleteDirSelf` 决定是否删除目录本身
+- `deleteDirSelf=true`：删除目录内容并删除目录本身
+- `deleteDirSelf=false`：仅清空目录内容，保留目录本身
+- `AdsLiteFileDeleteRecursive` 不再作为公开 API 提供
+
+### 文件服务 API 约定
+
+- 文件打开：`AdsLiteFileOpen` 由调用方传入打开标志（类似 QFile::open）
+- 文件删除：`AdsLiteFileDelete(port, pAddr, remotePath)` 不再暴露删除标志，默认按文件删除语义处理
+- 文件列表：`AdsLiteFileList(...)` 不再暴露查找标志，默认返回匹配路径下的文件和子目录名
+- `AdsLiteDeployWriteFile` / `AdsLiteDeployReadFile` 已移除，建议显式使用 Open/Write/Read/Close 组合
+
 
 ## 项目结构
 

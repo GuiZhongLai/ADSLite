@@ -1,4 +1,4 @@
-#pragma once
+#include "backend/NetworkUtils.h"
 
 #include <string>
 #include <vector>
@@ -32,7 +32,6 @@ std::string getLocalIpForTarget(const std::string &target_ip)
     std::string target_prefix = getSubnetPrefix(target_ip);
 
 #ifdef _WIN32
-    // Windows 实现
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
     {
@@ -42,7 +41,6 @@ std::string getLocalIpForTarget(const std::string &target_ip)
     IP_ADAPTER_ADDRESSES *adapter_addresses = nullptr;
     ULONG out_buffer_length = 0;
 
-    // 第一次调用获取所需缓冲区大小
     GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, nullptr,
                          adapter_addresses, &out_buffer_length);
 
@@ -64,7 +62,7 @@ std::string getLocalIpForTarget(const std::string &target_ip)
     for (auto adapter = adapter_addresses; adapter != nullptr; adapter = adapter->Next)
     {
         if (adapter->OperStatus != IfOperStatusUp)
-            continue; // 只处理已激活的接口
+            continue;
 
         for (auto addr = adapter->FirstUnicastAddress; addr != nullptr; addr = addr->Next)
         {
@@ -87,7 +85,6 @@ std::string getLocalIpForTarget(const std::string &target_ip)
     return "";
 
 #else
-    // Linux/Unix 实现
     struct ifaddrs *ifaddr, *ifa;
     if (getifaddrs(&ifaddr) == -1)
     {
@@ -103,7 +100,7 @@ std::string getLocalIpForTarget(const std::string &target_ip)
         if (ifa->ifa_addr->sa_family != AF_INET)
             continue;
         if (!(ifa->ifa_flags & IFF_UP))
-            continue; // 只处理已激活的接口
+            continue;
 
         struct sockaddr_in *sin = reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr);
         std::string local_ip = inet_ntoa(sin->sin_addr);

@@ -7,12 +7,13 @@
  */
 
 #include "AdsLiteAPI.h"
+#include "backend/AdsFileService.h"
 #include "backend/BackendSelector.h"
 #include "backend/IAdsBackend.h"
 #include "backend/NetIdResolver.h"
 
+#include <cstdio>
 #include <cstring>
-#include <string>
 
 namespace
 {
@@ -28,11 +29,54 @@ namespace
  */
 int64_t AdsLiteGetDeviceNetId(const char *addr, AmsNetId *ams)
 {
-    if (!addr || !ams)
+    return Backend().GetDeviceNetId(addr, ams);
+}
+
+int64_t AdsLiteGetSystemId(uint16_t port,
+                           const AmsAddr *pAddr,
+                           char *pSystemId,
+                           uint32_t systemIdBufferLength)
+{
+    if (!pAddr || !pSystemId)
     {
         return ADSERR_CLIENT_INVALIDPARM;
     }
-    return AdsLiteStandaloneGetRemoteAddress(addr, *ams);
+    if (systemIdBufferLength < 37)
+    {
+        return ADSERR_DEVICE_INVALIDSIZE;
+    }
+
+    uint8_t readBuffer[16] = {0};
+    uint32_t bytesRead = 0;
+    const int64_t status = Backend().SyncReadReq(port,
+                                                 pAddr,
+                                                 0x01010004u,
+                                                 0x1u,
+                                                 static_cast<uint32_t>(sizeof(readBuffer)),
+                                                 readBuffer,
+                                                 &bytesRead);
+    if (status != ADSERR_NOERR)
+    {
+        return status;
+    }
+    if (bytesRead < sizeof(readBuffer))
+    {
+        return ADSERR_DEVICE_INVALIDSIZE;
+    }
+
+    const int written = std::snprintf(pSystemId,
+                                      systemIdBufferLength,
+                                      "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+                                      readBuffer[3], readBuffer[2], readBuffer[1], readBuffer[0],
+                                      readBuffer[5], readBuffer[4], readBuffer[7], readBuffer[6],
+                                      readBuffer[8], readBuffer[9],
+                                      readBuffer[10], readBuffer[11], readBuffer[12], readBuffer[13], readBuffer[14], readBuffer[15]);
+    if (written <= 0 || static_cast<uint32_t>(written) >= systemIdBufferLength)
+    {
+        return ADSERR_DEVICE_INVALIDSIZE;
+    }
+
+    return ADSERR_NOERR;
 }
 
 /**
@@ -185,6 +229,94 @@ int64_t AdsLiteSyncWriteControlReq(uint16_t port,
                                    const void *pData)
 {
     return Backend().SyncWriteControlReq(port, pAddr, adsState, deviceState, length, pData);
+}
+
+// =========================================================================
+// 文件服务与程序更新辅助 API
+// =========================================================================
+
+int64_t AdsLiteFileOpen(uint16_t port,
+                        const AmsAddr *pAddr,
+                        const char *remotePath,
+                        uint32_t openFlags,
+                        uint32_t *pFileHandle)
+{
+    return adslite::file::FileOpen(Backend(), port, pAddr, remotePath, openFlags, pFileHandle);
+}
+
+int64_t AdsLiteFileClose(uint16_t port,
+                         const AmsAddr *pAddr,
+                         uint32_t fileHandle)
+{
+    return adslite::file::FileClose(Backend(), port, pAddr, fileHandle);
+}
+
+int64_t AdsLiteFileRead(uint16_t port,
+                        const AmsAddr *pAddr,
+                        uint32_t fileHandle,
+                        uint32_t length,
+                        void *pData,
+                        uint32_t *pBytesRead)
+{
+    return adslite::file::FileRead(Backend(), port, pAddr, fileHandle, length, pData, pBytesRead);
+}
+
+int64_t AdsLiteFileWrite(uint16_t port,
+                         const AmsAddr *pAddr,
+                         uint32_t fileHandle,
+                         const void *pData,
+                         uint32_t length)
+{
+    return adslite::file::FileWrite(Backend(), port, pAddr, fileHandle, pData, length);
+}
+
+int64_t AdsLiteFileDelete(uint16_t port,
+                          const AmsAddr *pAddr,
+                          const char *remotePath)
+{
+    return adslite::file::FileDelete(Backend(), port, pAddr, remotePath, ADSLITE_FOPEN_READ);
+}
+
+int64_t AdsLiteDirCreate(uint16_t port,
+                         const AmsAddr *pAddr,
+                         const char *remoteDirPath)
+{
+    return adslite::file::DirCreate(Backend(), port, pAddr, remoteDirPath);
+}
+
+int64_t AdsLiteDirDelete(uint16_t port,
+                         const AmsAddr *pAddr,
+                         const char *remoteDirPath,
+                         bool deleteDirSelf)
+{
+    return adslite::file::DirDelete(Backend(), port, pAddr, remoteDirPath, deleteDirSelf);
+}
+
+int64_t AdsLiteFileRename(uint16_t port,
+                          const AmsAddr *pAddr,
+                          const char *sourcePath,
+                          const char *targetPath)
+{
+    return adslite::file::FileRename(Backend(), port, pAddr, sourcePath, targetPath);
+}
+
+int64_t AdsLiteFileList(uint16_t port,
+                        const AmsAddr *pAddr,
+                        const char *pathPattern,
+                        char *pNameBuffer,
+                        uint32_t nameBufferLength,
+                        uint32_t *pBytesRequired,
+                        uint32_t *pItemCount)
+{
+    return adslite::file::FileList(Backend(),
+                                   port,
+                                   pAddr,
+                                   pathPattern,
+                                   ADSLITE_FOPEN_READ,
+                                   pNameBuffer,
+                                   nameBufferLength,
+                                   pBytesRequired,
+                                   pItemCount);
 }
 
 // =========================================================================

@@ -2,9 +2,18 @@
 
 #include "standalone/AdsLiteLib.h"
 #include "standalone/AmsNetId.h"
-#include "standalone/NetworkUtils.h"
+#include "backend/NetworkUtils.h"
 
 #include <string>
+
+int64_t StandaloneBackend::GetDeviceNetId(const char *addr, AmsNetId *ams)
+{
+    if (!addr || !ams)
+    {
+        return ADSERR_CLIENT_INVALIDPARM;
+    }
+    return GetRemoteAddress(addr, *ams);
+}
 
 int64_t StandaloneBackend::InitRouting(const char *addr, AmsNetId *ams)
 {

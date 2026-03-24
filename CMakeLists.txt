@@ -6,9 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(SOURCES
   AdsLiteAPI.cpp
-    backend/StandaloneBackend.cpp
-    backend/BackendSelector.cpp
-    backend/TwinCATBackend.cpp
+  backend/StandaloneBackend.cpp
+  backend/BackendSelector.cpp
+  backend/TwinCATBackend.cpp
+  backend/NetworkUtils.cpp
+  backend/AdsFileService.cpp
 
   standalone/AdsLiteLib.cpp
   standalone/Sockets.cpp
@@ -18,9 +20,13 @@ set(SOURCES
   standalone/AmsConnection.cpp
   standalone/AmsPort.cpp
   standalone/NotificationDispatcher.cpp
+    
 )
 
 add_library(ADSLite SHARED ${SOURCES})
+if(MSVC)
+    target_compile_options(ADSLite PRIVATE /utf-8)
+endif()
 if(WIN32)
     target_compile_definitions(ADSLite PRIVATE ADS_LITE_BUILD_DLL)
 
@@ -59,6 +65,7 @@ add_library(ADSLite::ADSLite ALIAS ADSLite)
 
 target_include_directories(ADSLite PUBLIC 
 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/backend>
 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/standalone>
 $<INSTALL_INTERFACE:include/ADSLite>
 )
@@ -92,4 +99,7 @@ option(BUILD_EXAMPLES "Build the example program" ON)
 
 if(BUILD_EXAMPLES)
     add_subdirectory(example)
+    if(MSVC)
+        target_compile_options(example PRIVATE /utf-8)
+    endif()
 endif()

@@ -12,6 +12,7 @@ public:
     bool IsAvailable() const;
     const char *AvailabilityReason() const;
 
+    int64_t GetDeviceNetId(const char *addr, AmsNetId *ams) override;
     int64_t InitRouting(const char *addr, AmsNetId *ams) override;
     void ShutdownRouting(AmsNetId *ams) override;
 
