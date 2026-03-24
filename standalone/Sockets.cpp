@@ -181,9 +181,9 @@ void Socket::Shutdown()
 	shutdown(m_Socket, SHUT_RDWR);
 }
 
-size_t Socket::read(uint8_t *buffer, size_t maxBytes, timeval *timeout) const
+size_t Socket::read(uint8_t *buffer, size_t maxBytes, timeval *timeout, SocketError &error) const
 {
-	if (!Select(timeout))
+	if (!Select(timeout, error))
 	{
 		return 0;
 	}
@@ -194,26 +194,48 @@ size_t Socket::read(uint8_t *buffer, size_t maxBytes, timeval *timeout) const
 							   msvcMaxBytes, 0);
 	if (bytesRead > 0)
 	{
+		error = SocketError::None;
 		return bytesRead;
 	}
+
 	const auto lastError = WSAGetLastError();
-	if ((0 == bytesRead) || (lastError == CONNECTION_CLOSED) ||
+	if ((bytesRead == 0) || (lastError == CONNECTION_CLOSED) ||
 		(lastError == CONNECTION_ABORTED))
 	{
-		throw std::runtime_error("connection closed by remote");
+		error = SocketError::ConnectionClosed;
+		return 0;
 	}
 	else
 	{
+		error = SocketError::IoError;
 		LOG_ERROR("read frame failed with error: "
 				  << std::dec << std::strerror(lastError));
 	}
 	return 0;
 }
 
-Frame &Socket::read(Frame &frame, timeval *timeout) const
+size_t Socket::read(uint8_t *buffer, size_t maxBytes, timeval *timeout) const
 {
-	const size_t bytesRead =
-		read(frame.rawData(), frame.capacity(), timeout);
+	SocketError error;
+	const size_t bytesRead = read(buffer, maxBytes, timeout, error);
+	if (error == SocketError::None)
+	{
+		return bytesRead;
+	}
+	if (error == SocketError::Timeout)
+	{
+		throw TimeoutEx("select() timeout");
+	}
+	if (error == SocketError::ConnectionClosed)
+	{
+		throw std::runtime_error("connection closed by remote");
+	}
+	throw std::runtime_error("socket read failed");
+}
+
+Frame &Socket::read(Frame &frame, timeval *timeout, SocketError &error) const
+{
+	const size_t bytesRead = read(frame.rawData(), frame.capacity(), timeout, error);
 	if (bytesRead)
 	{
 		return frame.limit(bytesRead);
@@ -221,7 +243,26 @@ Frame &Socket::read(Frame &frame, timeval *timeout) const
 	return frame.clear();
 }
 
-bool Socket::Select(timeval *timeout) const
+Frame &Socket::read(Frame &frame, timeval *timeout) const
+{
+	SocketError error;
+	Frame &result = read(frame, timeout, error);
+	if (error == SocketError::Timeout)
+	{
+		throw TimeoutEx("select() timeout");
+	}
+	if (error == SocketError::ConnectionClosed)
+	{
+		throw std::runtime_error("connection closed by remote");
+	}
+	if (error != SocketError::None)
+	{
+		throw std::runtime_error("socket read failed");
+	}
+	return result;
+}
+
+bool Socket::Select(timeval *timeout, SocketError &error) const
 {
 	/* prepare socket set for select() */
 	fd_set readSockets;
@@ -233,25 +274,37 @@ bool Socket::Select(timeval *timeout) const
 									nullptr, timeout);
 	if (0 == state)
 	{
-		LOG_ERROR("select() timeout");
-		throw TimeoutEx("select() timeout");
+		error = SocketError::Timeout;
+		LOG_WARN("select() timeout");
+		return false;
 	}
 
-	const auto lastError = WSAGetLastError();
-	if (lastError == WSAENOTSOCK)
+	if (state == SOCKET_ERROR)
 	{
-		throw std::runtime_error("connection closed");
+		const auto lastError = WSAGetLastError();
+		if (lastError == WSAENOTSOCK)
+		{
+			error = SocketError::NotSocket;
+			LOG_WARN("select() failed: not a socket");
+		}
+		else
+		{
+			error = SocketError::IoError;
+			LOG_ERROR("select() failed with error: " << lastError);
+		}
+		return false;
 	}
 
 	/* and check if socket was correct */
-	if ((1 != state) || (!FD_ISSET(m_Socket, &readSockets)))
+	if (!FD_ISSET(m_Socket, &readSockets))
 	{
-		LOG_ERROR(
-			"something strange happen while waiting for socket in state: "
-			<< state
-			<< " with error: " << std::strerror(lastError));
+		error = SocketError::IoError;
+		LOG_ERROR("something strange happen while waiting for socket in state: "
+				  << state);
 		return false;
 	}
+
+	error = SocketError::None;
 	return true;
 }
 

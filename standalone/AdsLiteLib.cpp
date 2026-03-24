@@ -72,7 +72,18 @@ static long SendRecv(const std::string &remote, Frame &f, const uint32_t service
 
     static constexpr auto headerLength = sizeof(serviceId) + sizeof(invokeId) + sizeof(UDP_COOKIE);
     timeval timeout{5, 0};
-    s.read(f, &timeout);
+
+    SocketError sockErr = SocketError::None;
+    s.read(f, &timeout, sockErr);
+    if (sockErr == SocketError::Timeout)
+    {
+        return ADSERR_CLIENT_SYNCTIMEOUT;
+    }
+    if (sockErr != SocketError::None)
+    {
+        return ADSERR_CLIENT_ERROR;
+    }
+
     if (headerLength > f.capacity())
     {
         LOG_ERROR(__FUNCTION__ << "(): frame too short to be AMS response '0x" << std::hex << f.capacity() << "'\n");
