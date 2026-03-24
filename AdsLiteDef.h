@@ -339,34 +339,21 @@ extern "C"
     };
 
     /**
-     * @brief 文件查找结果结构
-     */
-    struct AdsLiteFileFindData
-    {
-        uint32_t fileHandle;
-        uint32_t fileAttributes;
-        uint64_t reserved1[5];
-        char fileName[260];
-        char reserved2[14];
-        uint16_t reserved3;
-    };
-
-    /**
      * @brief 文件服务打开标志位
      */
     enum AdsLiteFileOpenFlags
     {
-        ADSLITE_FOPEN_READ = 1u << 0,
-        ADSLITE_FOPEN_WRITE = 1u << 1,
-        ADSLITE_FOPEN_APPEND = 1u << 2,
-        ADSLITE_FOPEN_PLUS = 1u << 3,
-        ADSLITE_FOPEN_BINARY = 1u << 4,
-        ADSLITE_FOPEN_TEXT = 1u << 5,
-        ADSLITE_FOPEN_ENSURE_DIR = 1u << 6,
-        ADSLITE_FOPEN_ENABLE_DIR = 1u << 7,
-        ADSLITE_FOPEN_OVERWRITE = 1u << 8,
-        ADSLITE_FOPEN_OVERWRITE_RENAME = 1u << 9,
-        ADSLITE_FOPEN_SHIFT_OPENPATH = 16u
+        ADSLITE_FOPEN_READ = 1u << 0,             // 读模式
+        ADSLITE_FOPEN_WRITE = 1u << 1,            // 写模式（从头覆盖）
+        ADSLITE_FOPEN_APPEND = 1u << 2,           // 追加写模式
+        ADSLITE_FOPEN_PLUS = 1u << 3,             // 允许读写组合
+        ADSLITE_FOPEN_BINARY = 1u << 4,           // 二进制模式
+        ADSLITE_FOPEN_TEXT = 1u << 5,             // 文本模式
+        ADSLITE_FOPEN_ENSURE_DIR = 1u << 6,       // 自动创建父目录
+        ADSLITE_FOPEN_ENABLE_DIR = 1u << 7,       // 目录操作使能（如目录删除）
+        ADSLITE_FOPEN_OVERWRITE = 1u << 8,        // 允许覆盖已有文件
+        ADSLITE_FOPEN_OVERWRITE_RENAME = 1u << 9, // 覆盖时重命名回退策略
+        ADSLITE_FOPEN_SHIFT_OPENPATH = 16u        // openPath 字段偏移位
     };
 
     /**

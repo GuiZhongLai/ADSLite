@@ -9,6 +9,16 @@ namespace adslite
 {
     namespace file
     {
+        struct AdsLiteFileFindData
+        {
+            uint32_t fileHandle;
+            uint32_t fileAttributes;
+            uint64_t reserved1[5];
+            char fileName[260];
+            char reserved2[14];
+            uint16_t reserved3;
+        };
+
         int64_t FileOpen(IAdsBackend &backend,
                          uint16_t port,
                          const AmsAddr *pAddr,

@@ -313,14 +313,14 @@ extern "C"
                                                     const void *pData);
 
     // =========================================================================
-    // 文件服务与程序更新辅助 API
+    // 文件服务 API
     // =========================================================================
 
     /**
      * @brief 打开目标设备上的文件
      *
      * 通过 ADS 系统服务打开远端文件并返回文件句柄。
-        * 打开标志位定义见 AdsLiteDef.h::AdsLiteFileOpenFlags。
+     * 打开标志位定义见 AdsLiteDef.h::AdsLiteFileOpenFlags。
      *
      * @param[in] port 本地端口号
      * @param[in] pAddr 目标设备 AMS 地址
