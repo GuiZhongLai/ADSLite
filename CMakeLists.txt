@@ -8,9 +8,11 @@ set(SOURCES
   AdsLiteAPI.cpp
   backend/StandaloneBackend.cpp
   backend/BackendSelector.cpp
+    backend/BackendServices.cpp
   backend/TwinCATBackend.cpp
   backend/NetworkUtils.cpp
   backend/AdsFileService.cpp
+    backend/TargetSystemInfo.cpp
 
   standalone/AdsLiteLib.cpp
   standalone/Sockets.cpp
@@ -101,5 +103,6 @@ if(BUILD_EXAMPLES)
     add_subdirectory(example)
     if(MSVC)
         target_compile_options(example PRIVATE /utf-8)
+        target_compile_options(example_file PRIVATE /utf-8)
     endif()
 endif()

@@ -53,21 +53,37 @@ extern "C"
     ADS_LITE_API int64_t AdsLiteGetDeviceNetId(const char *addr, AmsNetId *ams);
 
     /**
-     * @brief 获取目标设备 SystemId（GUID 字符串）
+     * @brief 获取目标设备平台 ID
      *
-     * 通过固定索引组读取 16 字节 SystemId，并格式化为
-     * "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"。
+     * platformId 建议配合 ADSPLATFORMID 枚举常量使用，
+     * 避免外部直接硬编码平台数值。
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址
+     * @param[out] pPlatformId 输出平台 ID
+     * @return 返回错误码，0 表示成功
+     */
+    ADS_LITE_API int64_t AdsLiteGetTargetPlatformId(uint16_t port,
+                                                    const AmsAddr *pAddr,
+                                                    ADSPLATFORMID *pPlatformId);
+
+    /**
+     * @brief 获取目标设备 systemId
+     *
+     * systemId 是设备的唯一标识符，格式为 GUID 字符串：
+     * "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
      *
      * @param[in] port 本地端口号
      * @param[in] pAddr 目标设备 AMS 地址
      * @param[out] pSystemId 输出字符串缓冲区
-     * @param[in] systemIdBufferLength 缓冲区长度，至少 37 字节
+     * @param[in] systemIdBufferLength 输出缓冲区长度，建议使用
+     *                                ADSLITE_SYSTEM_ID_BUFFER_LENGTH
      * @return 返回错误码，0 表示成功
      */
-    ADS_LITE_API int64_t AdsLiteGetSystemId(uint16_t port,
-                                            const AmsAddr *pAddr,
-                                            char *pSystemId,
-                                            uint32_t systemIdBufferLength);
+    ADS_LITE_API int64_t AdsLiteGetTargetSystemId(uint16_t port,
+                                                  const AmsAddr *pAddr,
+                                                  char *pSystemId,
+                                                  uint32_t systemIdBufferLength);
 
     /**
      * @brief 初始化 ADS 路由
@@ -88,6 +104,7 @@ extern "C"
      *         - 其他值: 参见 ADS Return Codes
      *
      * @note 调用此函数前，可以先调用 AdsLiteGetDeviceNetId 获取设备的 NetId
+     * @note 目标设备 platformId 和 systemId 在首次查询时按需读取并缓存
      * @note 不再需要通信时，必须调用 AdsLiteShutdownRouting() 清理资源
      *
      * @code

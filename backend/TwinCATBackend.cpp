@@ -98,7 +98,6 @@ int64_t TwinCATBackend::InitRouting(const char *addr, AmsNetId *ams)
     }
 }
 
-
 void TwinCATBackend::ShutdownRouting(AmsNetId *ams)
 {
     (void)ams;

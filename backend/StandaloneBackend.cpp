@@ -2,9 +2,39 @@
 
 #include "standalone/AdsLiteLib.h"
 #include "standalone/AmsNetId.h"
+#include "standalone/Log.h"
 #include "backend/NetworkUtils.h"
 
 #include <string>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+namespace
+{
+    std::string GetLocalComputerName()
+    {
+#ifdef _WIN32
+        char buffer[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+        DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
+        if (GetComputerNameA(buffer, &size) != 0 && size > 0)
+        {
+            return std::string(buffer, size);
+        }
+#else
+        char buffer[256] = {0};
+        if (gethostname(buffer, sizeof(buffer) - 1) == 0 && buffer[0] != '\0')
+        {
+            return std::string(buffer);
+        }
+#endif
+        return std::string();
+    }
+}
 
 int64_t StandaloneBackend::GetDeviceNetId(const char *addr, AmsNetId *ams)
 {
@@ -29,15 +59,31 @@ int64_t StandaloneBackend::InitRouting(const char *addr, AmsNetId *ams)
         const std::string localIp = getLocalIpForTarget(addr);
         if (localIp.empty())
         {
+            LOG_WARN("StandaloneBackend::InitRouting failed to resolve local ip for target " << addr);
             return ADSERR_CLIENT_ERROR;
         }
 
         const std::string netIdText = localIp + ".1.1";
         const AmsNetId localNetId = AmsNetIdHelper::create(netIdText);
+        if (AmsNetIdHelper::isEmpty(localNetId))
+        {
+            LOG_ERROR("StandaloneBackend::InitRouting produced empty local netid from localIp=" << localIp);
+            return ADSERR_CLIENT_NOAMSADDR;
+        }
 
-        ret = AddRemoteRoute(addr, localNetId, localIp, "AdsLiteRoute");
+        const std::string localComputerName = GetLocalComputerName();
+        const std::string routeName = localComputerName.empty() ? localIp : localComputerName;
+
+        LOG_INFO("StandaloneBackend::InitRouting localIp=" << localIp
+                                                           << ", localNetId=" << AmsNetIdHelper::toString(localNetId)
+                                                           << ", routeName=" << routeName);
+
+        ret = AddRemoteRoute(addr, localNetId, routeName, routeName);
         if (ret != 0)
+        {
+            LOG_WARN("StandaloneBackend::InitRouting AddRemoteRoute failed ret=0x" << std::hex << ret << std::dec);
             return ret;
+        }
 
         return AddLocalRoute(*ams, addr);
     }
