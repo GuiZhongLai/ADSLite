@@ -13,6 +13,7 @@
 typedef void(__stdcall *PAmsRouterNotificationFuncEx)(long nEvent);
 #define dllexport dllimport
 #include "TcAdsAPI.h"
+#include "TwinCATBackend.h"
 #undef dllexport
 #endif
 
@@ -347,8 +348,9 @@ int64_t TwinCATBackend::SyncReadStateReq(uint16_t port,
     }
 
 #if defined(_WIN32) && defined(ADSLITE_TWINCAT_ENABLED) && ADSLITE_TWINCAT_ENABLED
+    AmsAddr stateAddr = BuildStateAddr(pAddr);
     return AdsSyncReadStateReqEx(port,
-                                 const_cast<AmsAddr *>(pAddr),
+                                 const_cast<AmsAddr *>(&stateAddr),
                                  pAdsState,
                                  pDeviceState);
 #else
@@ -381,8 +383,9 @@ int64_t TwinCATBackend::SyncWriteControlReq(uint16_t port,
     }
 
 #if defined(_WIN32) && defined(ADSLITE_TWINCAT_ENABLED) && ADSLITE_TWINCAT_ENABLED
+    AmsAddr stateAddr = BuildStateAddr(pAddr);
     return AdsSyncWriteControlReqEx(port,
-                                    const_cast<AmsAddr *>(pAddr),
+                                    const_cast<AmsAddr *>(&stateAddr),
                                     adsState,
                                     deviceState,
                                     length,
@@ -396,4 +399,12 @@ int64_t TwinCATBackend::SyncWriteControlReq(uint16_t port,
     (void)pData;
     return ADSERR_DEVICE_SRVNOTSUPP;
 #endif
+}
+
+AmsAddr TwinCATBackend::BuildStateAddr(const AmsAddr *pAddr) const
+{
+    AmsAddr stateAddr = *pAddr;
+    // 操作状态固定走 10000 端口，避免调用方传入 851 导致服务不支持。
+    stateAddr.port = kStatePort;
+    return stateAddr;
 }

@@ -2,8 +2,9 @@
 
 #include "backend/IAdsBackend.h"
 
-struct StandaloneBackend : IAdsBackend
+class StandaloneBackend : public IAdsBackend
 {
+public:
     int64_t GetDeviceNetId(const char *addr, AmsNetId *ams) override;
     int64_t InitRouting(const char *addr, AmsNetId *ams) override;
     void ShutdownRouting(AmsNetId *ams) override;
@@ -53,4 +54,10 @@ struct StandaloneBackend : IAdsBackend
                                 uint16_t deviceState,
                                 uint32_t length,
                                 const void *pData) override;
+
+private:
+    AmsAddr BuildStateAddr(const AmsAddr *pAddr) const;
+
+private:
+    static constexpr uint16_t kStatePort = 10000;
 };

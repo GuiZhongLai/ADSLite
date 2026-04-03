@@ -63,6 +63,9 @@ public:
                                 const void *pData) override;
 
 private:
+    AmsAddr BuildStateAddr(const AmsAddr *pAddr) const;
+
     bool available;
     std::string reason;
+    static constexpr uint16_t kStatePort = 10000;
 };

@@ -12,6 +12,7 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include "StandaloneBackend.h"
 #endif
 
 namespace
@@ -188,7 +189,8 @@ int64_t StandaloneBackend::SyncReadStateReq(uint16_t port,
                                             uint16_t *pAdsState,
                                             uint16_t *pDeviceState)
 {
-    return AdsSyncReadStateReqEx(port, pAddr, pAdsState, pDeviceState);
+    const AmsAddr stateAddr = BuildStateAddr(pAddr);
+    return AdsSyncReadStateReqEx(port, &stateAddr, pAdsState, pDeviceState);
 }
 
 int64_t StandaloneBackend::SyncWriteControlReq(uint16_t port,
@@ -198,5 +200,14 @@ int64_t StandaloneBackend::SyncWriteControlReq(uint16_t port,
                                                uint32_t length,
                                                const void *pData)
 {
-    return AdsSyncWriteControlReqEx(port, pAddr, adsState, deviceState, length, pData);
+    const AmsAddr stateAddr = BuildStateAddr(pAddr);
+    return AdsSyncWriteControlReqEx(port, &stateAddr, adsState, deviceState, length, pData);
+}
+
+AmsAddr StandaloneBackend::BuildStateAddr(const AmsAddr *pAddr) const
+{
+    AmsAddr stateAddr = *pAddr;
+    // 操作状态固定走 10000 端口，避免调用方传入 851 导致服务不支持。
+    stateAddr.port = kStatePort;
+    return stateAddr;
 }
