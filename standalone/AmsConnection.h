@@ -19,17 +19,19 @@ struct AmsRequest
 	const AmsAddr &destAddr;
 	uint16_t port;
 	uint16_t cmdId;
+	bool allowReconnectRetry;
 	uint32_t bufferLength;
 	void *buffer;
 	uint32_t *bytesRead;
 	Timepoint deadline;
 
 	AmsRequest(const AmsAddr &ams, uint16_t __port, uint16_t __cmdId,
+			   bool __allowReconnectRetry = false,
 			   uint32_t __bufferLength = 0, void *__buffer = nullptr,
 			   uint32_t *__bytesRead = nullptr, size_t payloadLength = 0)
 		: frame(sizeof(AmsTcpHeader) + sizeof(AoEHeader) +
 				payloadLength),
-		  destAddr(ams), port(__port), cmdId(__cmdId), bufferLength(__bufferLength), buffer(__buffer), bytesRead(__bytesRead)
+		  destAddr(ams), port(__port), cmdId(__cmdId), allowReconnectRetry(__allowReconnectRetry), bufferLength(__bufferLength), buffer(__buffer), bytesRead(__bytesRead)
 	{
 	}
 

@@ -29,9 +29,12 @@ private:
 	std::map<AmsNetId, std::tuple<>> connection_attempts;
 	std::unordered_set<std::unique_ptr<AmsConnection>> connections;
 	std::map<AmsNetId, AmsConnection *> mapping;
+	std::map<AmsNetId, std::string> routeHosts;
 
 	std::array<AmsPort, NUM_PORTS_MAX> ports;
 
 	void AwaitConnectionAttempts(const AmsNetId &ams, std::unique_lock<std::recursive_mutex> &lock);
 	void DeleteIfLastConnection(const AmsConnection *conn);
+	void InvalidateRouteConnection(const AmsNetId &ams, const AmsConnection *expectedConnection = nullptr);
+	bool IsRecoverableTransportFailure(long status) const;
 };

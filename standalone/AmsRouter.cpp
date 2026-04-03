@@ -2,6 +2,8 @@
 #include "AmsAddr.h"
 #include "AmsNetId.h"
 
+#include <string>
+
 AmsRouter::AmsRouter(AmsNetId netId) : localAddr(netId)
 {
 }
@@ -102,6 +104,7 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 		{
 			conn->refCount++;
 			mapping[ams] = conn.get();
+			routeHosts[ams] = host;
 			return 0;
 		}
 	}
@@ -126,6 +129,7 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 			}
 			conn.first->get()->refCount++;
 			mapping[ams] = conn.first->get();
+			routeHosts[ams] = host;
 			return !conn.first->get()->ownIp;
 		}
 
@@ -150,6 +154,7 @@ void AmsRouter::DelRoute(const AmsNetId &ams)
 	if (route != mapping.end())
 	{
 		AmsConnection *conn = route->second;
+		routeHosts.erase(ams);
 		if (0 == --conn->refCount)
 		{
 			mapping.erase(route);
@@ -181,7 +186,67 @@ long AmsRouter::AdsRequest(AmsRequest &request)
 	{
 		return GLOBALERR_MISSING_ROUTE;
 	}
-	return ads->AdsRequest(request, ports[request.port - Router::PORT_BASE].tmms);
+
+	const auto timeout = ports[request.port - Router::PORT_BASE].tmms;
+	const auto status = ads->AdsRequest(request, timeout);
+	if (!request.allowReconnectRetry || !IsRecoverableTransportFailure(status))
+	{
+		return status;
+	}
+
+	std::string host;
+	{
+		std::lock_guard<std::recursive_mutex> lock(mutex);
+		const auto hostIt = routeHosts.find(request.destAddr.netId);
+		if (hostIt == routeHosts.end())
+		{
+			return status;
+		}
+		host = hostIt->second;
+	}
+
+	InvalidateRouteConnection(request.destAddr.netId, ads);
+	const auto reconnectStatus = AddRoute(request.destAddr.netId, host);
+	if (reconnectStatus)
+	{
+		return reconnectStatus;
+	}
+
+	auto retryConnection = GetConnection(request.destAddr.netId);
+	if (!retryConnection)
+	{
+		return GLOBALERR_MISSING_ROUTE;
+	}
+
+	return retryConnection->AdsRequest(request, timeout);
+}
+
+void AmsRouter::InvalidateRouteConnection(const AmsNetId &ams, const AmsConnection *expectedConnection)
+{
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	auto route = mapping.find(ams);
+	if (route == mapping.end())
+	{
+		return;
+	}
+
+	AmsConnection *conn = route->second;
+	if (expectedConnection && conn != expectedConnection)
+	{
+		return;
+	}
+
+	mapping.erase(route);
+	if (conn && conn->refCount > 0)
+	{
+		--conn->refCount;
+	}
+	DeleteIfLastConnection(conn);
+}
+
+bool AmsRouter::IsRecoverableTransportFailure(long status) const
+{
+	return status == -1;
 }
 
 void AmsRouter::AwaitConnectionAttempts(const AmsNetId &ams, std::unique_lock<std::recursive_mutex> &lock)

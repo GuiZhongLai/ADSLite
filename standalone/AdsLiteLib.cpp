@@ -177,6 +177,7 @@ long AdsSyncReadReqEx2(uint16_t port, const AmsAddr *pAddr, uint32_t indexGroup,
             *pAddr,
             port,
             AoEHeader::READ,
+            true,
             length,
             pData,
             pBytesRead,
@@ -207,6 +208,7 @@ long AdsSyncWriteReqEx2(uint16_t port, const AmsAddr *pAddr, uint32_t indexGroup
             *pAddr,
             port,
             AoEHeader::WRITE,
+            false,
             0,
             nullptr,
             nullptr,
@@ -239,6 +241,7 @@ long AdsSyncReadStateReqEx(uint16_t port, const AmsAddr *pAddr, uint16_t *pAdsSt
             *pAddr,
             port,
             AoEHeader::READ_STATE,
+            true,
             sizeof(buffer),
             buffer};
         const auto status = GetRouter().AdsRequest(request);
@@ -264,6 +267,7 @@ long AdsSyncWriteControlReqEx(uint16_t port, const AmsAddr *pAddr, uint16_t adsS
             *pAddr,
             port,
             AoEHeader::WRITE_CONTROL,
+            false,
             0, nullptr, nullptr,
             sizeof(AdsWriteCtrlRequest) + length};
         request.frame.prepend(pData, length);
@@ -300,6 +304,7 @@ long AdsSyncReadWriteReqEx2(uint16_t port,
             *pAddr,
             port,
             AoEHeader::READ_WRITE,
+            readLength != 0,
             readLength,
             pReadData,
             pBytesRead,
@@ -348,6 +353,7 @@ long AddRemoteRoute(const std::string &remote, AmsNetId destNetId, const std::st
 {
     const std::string remoteUsername = "Administrator";
     const std::string remotePassword = "1";
+
     Frame f{256};
     uint32_t tagCount = 0;
     tagCount += PrependUdpTag(f, destAddr, UdpTag::COMPUTERNAME);
@@ -363,6 +369,7 @@ long AddRemoteRoute(const std::string &remote, AmsNetId destNetId, const std::st
     const auto status = SendRecv(remote, f, UdpServiceId::ADDROUTE);
     if (status)
     {
+        LOG_WARN("AddRemoteRoute SendRecv failed ret=0x" << std::hex << status << std::dec);
         return status;
     }
 
