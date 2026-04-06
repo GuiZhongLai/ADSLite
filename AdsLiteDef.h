@@ -20,6 +20,9 @@
 #endif
 
 #define ADS_FIXEDNAMESIZE 256
+#define ADSLITE_DISCOVERY_DEVICE_NAME_MAX 64u
+#define ADSLITE_DISCOVERY_SERVICE_TEXT_MAX 320u
+#define ADSLITE_DISCOVERY_SYSTEM_ID_MAX 256u
 
 #ifdef __cplusplus
 extern "C"
@@ -309,6 +312,31 @@ extern "C"
     };
 
 #define ADSLITE_SYSTEM_ID_BUFFER_LENGTH 37u
+
+    /**
+     * @brief 广播发现参数
+     */
+    struct AdsLiteDiscoveryOptions
+    {
+        uint32_t timeoutMs;
+        uint32_t reserved;
+    };
+
+    /**
+     * @brief 广播发现结果项
+     */
+    struct AdsLiteDiscoveryDeviceInfo
+    {
+        AmsNetId netId;
+        uint16_t adsPort;
+        uint32_t ipv4HostOrder;
+        char ipAddress[16];
+        char deviceName[ADSLITE_DISCOVERY_DEVICE_NAME_MAX];
+        char serviceText[ADSLITE_DISCOVERY_SERVICE_TEXT_MAX];
+        AdsVersion runtimeVersion;
+        char systemId[ADSLITE_DISCOVERY_SYSTEM_ID_MAX];
+        uint32_t rawTagMask;
+    };
 
 #pragma pack(pop)
 

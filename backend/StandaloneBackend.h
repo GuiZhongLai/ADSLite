@@ -6,6 +6,12 @@ class StandaloneBackend : public IAdsBackend
 {
 public:
     int64_t GetDeviceNetId(const char *addr, AmsNetId *ams) override;
+    int64_t DiscoverDevices(const char *broadcastOrSubnet,
+                            const AdsLiteDiscoveryOptions *pOptions,
+                            AdsLiteDiscoveryDeviceInfo *pDevices,
+                            uint32_t deviceCapacity,
+                            uint32_t *pDeviceCount,
+                            uint32_t *pBytesRequired) override;
     int64_t InitRouting(const char *addr, AmsNetId *ams) override;
     void ShutdownRouting(AmsNetId *ams) override;
 

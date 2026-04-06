@@ -109,6 +109,105 @@ AdsLitePortClose(port);
 AdsLiteShutdownRouting(&target);
 ```
 
+### 2.1 广播发现设备（固定结构返回）
+
+`AdsLiteDiscoverDevices` 会在给定超时窗口内收集所有响应设备，
+返回固定结构字段（IP、NetId、名称、版本、systemId 等）。
+
+接口原型：
+
+```cpp
+int64_t AdsLiteDiscoverDevices(const char *broadcastOrSubnet,
+                               const AdsLiteDiscoveryOptions *pOptions,
+                               AdsLiteDiscoveryDeviceInfo *pDevices,
+                               uint32_t deviceCapacity,
+                               uint32_t *pDeviceCount,
+                               uint32_t *pBytesRequired);
+```
+
+参数说明：
+
+- `broadcastOrSubnet`：广播地址或可解析主机名，推荐 `"255.255.255.255"`
+- `pOptions`：可选，传 `nullptr` 时默认 `timeoutMs=2000`
+- `pDevices`：输出数组，可为 `nullptr`（仅统计数量）
+- `deviceCapacity`：`pDevices` 可写入的最大项数
+- `pDeviceCount`：实际发现数量（必填）
+- `pBytesRequired`：按实际发现数量估算的字节数（可选）
+
+`AdsLiteDiscoveryDeviceInfo` 字段说明：
+
+- `netId`：设备 AMS NetId
+- `adsPort`：设备响应中的 ADS 端口（常见为 10000）
+- `ipv4HostOrder`：IPv4 的主机序整型值
+- `ipAddress`：来源 IP（点分十进制字符串）
+- `deviceName`：设备名称（通常来自 tag `0x0005`）
+- `serviceText`：系统文本（tag `0x0004`，可能由 UTF-16LE 转换）
+- `runtimeVersion`：版本信息（tag `0x0003`）
+- `systemId`：系统标识（tag `0x0012`）
+- `rawTagMask`：已解析到的 tag 位图
+
+返回值语义：
+
+- `ADSERR_NOERR`：成功，且至少发现 1 台设备
+- `ADSERR_CLIENT_SYNCTIMEOUT`：超时未发现设备
+- `ADSERR_CLIENT_INVALIDPARM`：参数不合法
+
+容量语义：
+
+- 当发现数量 `count > deviceCapacity` 时，仅前 `deviceCapacity` 项写入 `pDevices`
+- `pDeviceCount` 仍返回实际发现总数
+- 可结合 `pBytesRequired` 判断是否需要更大缓冲区
+
+```cpp
+#include <iostream>
+
+AdsLiteDiscoveryOptions options{};
+options.timeoutMs = 2000;
+
+AdsLiteDiscoveryDeviceInfo devices[16] = {};
+uint32_t count = 0;
+uint32_t bytesRequired = 0;
+
+int64_t ret = AdsLiteDiscoverDevices("255.255.255.255",
+                                     &options,
+                                     devices,
+                                     16,
+                                     &count,
+                                     &bytesRequired);
+
+if (ret == 0) {
+    std::cout << "found=" << count << " bytesRequired=" << bytesRequired << "\n";
+    for (uint32_t i = 0; i < count && i < 16; ++i) {
+        const auto &d = devices[i];
+        std::cout << "[" << i << "] "
+                  << "ip=" << d.ipAddress
+                  << " netid="
+                  << static_cast<int>(d.netId.b[0]) << "."
+                  << static_cast<int>(d.netId.b[1]) << "."
+                  << static_cast<int>(d.netId.b[2]) << "."
+                  << static_cast<int>(d.netId.b[3]) << "."
+                  << static_cast<int>(d.netId.b[4]) << "."
+                  << static_cast<int>(d.netId.b[5])
+                  << " name=" << d.deviceName
+                  << " version="
+                  << static_cast<int>(d.runtimeVersion.version) << "."
+                  << static_cast<int>(d.runtimeVersion.revision) << "."
+                  << d.runtimeVersion.build
+                  << " systemId=" << d.systemId
+                  << "\n";
+    }
+} else if (ret == ADSERR_CLIENT_SYNCTIMEOUT) {
+    std::cout << "discover timeout, no device responded" << "\n";
+} else {
+    std::cout << "discover failed, ret=0x" << std::hex << ret << std::dec << "\n";
+}
+```
+
+与现有接口关系：
+
+- `AdsLiteGetDeviceNetId` 保持原行为（单目标解析）
+- `AdsLiteDiscoverDevices` 用于局域网枚举与批量设备信息获取
+
 ### 3. 文件服务示例
 
 ```cpp

@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(SOURCES
   AdsLiteAPI.cpp
   backend/StandaloneBackend.cpp
+    backend/BroadcastDiscovery.cpp
   backend/BackendSelector.cpp
     backend/BackendServices.cpp
   backend/TwinCATBackend.cpp

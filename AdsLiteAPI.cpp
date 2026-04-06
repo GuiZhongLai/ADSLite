@@ -49,6 +49,21 @@ int64_t AdsLiteGetDeviceNetId(const char *addr, AmsNetId *ams)
     return Backend().GetDeviceNetId(addr, ams);
 }
 
+int64_t AdsLiteDiscoverDevices(const char *broadcastOrSubnet,
+                               const AdsLiteDiscoveryOptions *pOptions,
+                               AdsLiteDiscoveryDeviceInfo *pDevices,
+                               uint32_t deviceCapacity,
+                               uint32_t *pDeviceCount,
+                               uint32_t *pBytesRequired)
+{
+    return Backend().DiscoverDevices(broadcastOrSubnet,
+                                     pOptions,
+                                     pDevices,
+                                     deviceCapacity,
+                                     pDeviceCount,
+                                     pBytesRequired);
+}
+
 /**
  * @brief 获取目标设备的 platformId
  * @see AdsLiteAPI.h::AdsLiteGetTargetPlatformId

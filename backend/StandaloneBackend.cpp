@@ -3,6 +3,7 @@
 #include "standalone/AdsLiteLib.h"
 #include "standalone/AmsNetId.h"
 #include "standalone/Log.h"
+#include "backend/BroadcastDiscovery.h"
 #include "backend/NetworkUtils.h"
 
 #include <string>
@@ -44,6 +45,31 @@ int64_t StandaloneBackend::GetDeviceNetId(const char *addr, AmsNetId *ams)
         return ADSERR_CLIENT_INVALIDPARM;
     }
     return GetRemoteAddress(addr, *ams);
+}
+
+int64_t StandaloneBackend::DiscoverDevices(const char *broadcastOrSubnet,
+                                           const AdsLiteDiscoveryOptions *pOptions,
+                                           AdsLiteDiscoveryDeviceInfo *pDevices,
+                                           uint32_t deviceCapacity,
+                                           uint32_t *pDeviceCount,
+                                           uint32_t *pBytesRequired)
+{
+    if (!broadcastOrSubnet || !pDeviceCount)
+    {
+        return ADSERR_CLIENT_INVALIDPARM;
+    }
+
+    const uint32_t timeoutMs = (pOptions && pOptions->timeoutMs > 0) ? pOptions->timeoutMs : 2000u;
+    const int64_t status = adslite::backend::BroadcastDiscovery::Discover(broadcastOrSubnet,
+                                                                          timeoutMs,
+                                                                          pDevices,
+                                                                          deviceCapacity,
+                                                                          pDeviceCount);
+    if (pBytesRequired)
+    {
+        *pBytesRequired = (*pDeviceCount) * static_cast<uint32_t>(sizeof(AdsLiteDiscoveryDeviceInfo));
+    }
+    return status;
 }
 
 int64_t StandaloneBackend::InitRouting(const char *addr, AmsNetId *ams)

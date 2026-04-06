@@ -55,6 +55,8 @@ enum UdpServiceId : uint32_t
     RESPONSE = 0x80000000,
 };
 
+static constexpr uint32_t kUdpCookie = 0x71146603;
+
 static long SendRecv(const std::string &remote, Frame &f, const uint32_t serviceId)
 {
     f.prepend(bhf::ads::htole(serviceId));
@@ -62,15 +64,14 @@ static long SendRecv(const std::string &remote, Frame &f, const uint32_t service
     static const uint32_t invokeId = 0;
     f.prepend(bhf::ads::htole(invokeId));
 
-    static const uint32_t UDP_COOKIE = 0x71146603;
-    f.prepend(bhf::ads::htole(UDP_COOKIE));
+    f.prepend(bhf::ads::htole(kUdpCookie));
 
     const auto addresses = bhf::ads::GetListOfAddresses(remote, "48899");
     UdpSocket s{addresses.get()};
     s.write(f);
     f.reset();
 
-    static constexpr auto headerLength = sizeof(serviceId) + sizeof(invokeId) + sizeof(UDP_COOKIE);
+    static constexpr auto headerLength = sizeof(serviceId) + sizeof(invokeId) + sizeof(kUdpCookie);
     timeval timeout{5, 0};
 
     SocketError sockErr = SocketError::None;
@@ -91,7 +92,7 @@ static long SendRecv(const std::string &remote, Frame &f, const uint32_t service
     }
 
     const auto cookie = f.pop_letoh<uint32_t>();
-    if (UDP_COOKIE != cookie)
+    if (kUdpCookie != cookie)
     {
         LOG_ERROR(__FUNCTION__ << "(): response contains invalid cookie '" << cookie << "'\n");
         return ADSERR_DEVICE_INVALIDDATA;

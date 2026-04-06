@@ -53,6 +53,30 @@ extern "C"
     ADS_LITE_API int64_t AdsLiteGetDeviceNetId(const char *addr, AmsNetId *ams);
 
     /**
+     * @brief 广播发现目标设备并返回固定信息结构
+     *
+     * 通过 UDP 广播向 48899 端口发送 SERVERINFO 请求，
+     * 在超时窗口内收集全部响应设备信息。
+     *
+     * @param[in] broadcastOrSubnet 广播地址或可解析主机名（例如 "255.255.255.255"）
+     * @param[in] pOptions 发现参数，传 nullptr 时使用默认参数（timeoutMs=2000）
+     * @param[out] pDevices 输出数组（可为 nullptr，用于仅统计）
+     * @param[in] deviceCapacity pDevices 的可写项数量
+     * @param[out] pDeviceCount 实际发现设备数（必填）
+     * @param[out] pBytesRequired 按发现总数计算所需字节数（可为 nullptr）
+     * @return 返回错误码，0 表示成功
+     *         - ADSERR_NOERR (0x00): 成功（发现到至少 1 台）
+     *         - ADSERR_CLIENT_SYNCTIMEOUT (0x745): 超时未发现设备
+     *         - ADSERR_CLIENT_INVALIDPARM (0x741): 参数无效
+     */
+    ADS_LITE_API int64_t AdsLiteDiscoverDevices(const char *broadcastOrSubnet,
+                                                const AdsLiteDiscoveryOptions *pOptions,
+                                                AdsLiteDiscoveryDeviceInfo *pDevices,
+                                                uint32_t deviceCapacity,
+                                                uint32_t *pDeviceCount,
+                                                uint32_t *pBytesRequired);
+
+    /**
      * @brief 获取目标设备平台 ID
      *
      * platformId 建议配合 ADSPLATFORMID 枚举常量使用，
