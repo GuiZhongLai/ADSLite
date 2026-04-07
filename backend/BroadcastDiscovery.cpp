@@ -16,7 +16,6 @@
 #define NOMINMAX
 #include <iphlpapi.h>
 #include <winsock2.h>
-#pragma comment(lib, "iphlpapi.lib")
 #endif
 
 #if !defined(_WIN32)
