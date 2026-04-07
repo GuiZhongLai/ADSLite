@@ -1,12 +1,28 @@
 #include "backend/BroadcastDiscovery.h"
 
+#include "standalone/Log.h"
 #include "standalone/wrap_endian.h"
 #include "standalone/wrap_socket.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstring>
+#include <cstdio>
+#include <string>
 #include <vector>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <iphlpapi.h>
+#include <winsock2.h>
+#pragma comment(lib, "iphlpapi.lib")
+#endif
+
+#if !defined(_WIN32)
+#include <ifaddrs.h>
+#include <net/if.h>
+#endif
 
 namespace
 {
@@ -33,9 +49,10 @@ namespace
     //
     // 常见标签:
     // - 0x0005: deviceName
-    // - 0x0004: serviceText (常见 UTF-16LE)
+    // - 0x0004: serviceText 或平台标识
     // - 0x0003: runtimeVersion
-    // - 0x0012: systemId
+    // - 0x0012: fingerprint
+    // - 0x0014: platformId（部分设备）
     static constexpr uint32_t kUdpCookie = 0x71146603;
     static constexpr uint32_t kUdpInvokeId = 0;
     static constexpr uint32_t kServerInfoRequest = 1;
@@ -98,6 +115,240 @@ namespace
         dst[writeLen] = '\0';
     }
 
+    bool IsMostlyPrintableAscii(const char *text)
+    {
+        if (!text || text[0] == '\0')
+        {
+            return false;
+        }
+
+        size_t total = 0;
+        size_t printable = 0;
+        for (const char *p = text; *p != '\0'; ++p)
+        {
+            const unsigned char c = static_cast<unsigned char>(*p);
+            ++total;
+            if (std::isprint(c) || std::isspace(c))
+            {
+                ++printable;
+            }
+        }
+        return total > 0 && printable == total;
+    }
+
+    void CopyBinaryAsHexField(char *dst, size_t dstSize, const uint8_t *src, size_t srcLen)
+    {
+        if (!dst || dstSize == 0)
+        {
+            return;
+        }
+
+        dst[0] = '\0';
+        if (!src || srcLen == 0)
+        {
+            return;
+        }
+
+        const size_t maxBytes = (std::min)(srcLen, static_cast<size_t>(8));
+        size_t write = 0;
+        for (size_t i = 0; i < maxBytes && write + 4 < dstSize; ++i)
+        {
+            const int n = std::snprintf(dst + write, dstSize - write, (i == 0) ? "0x%02X" : " %02X", src[i]);
+            if (n <= 0)
+            {
+                break;
+            }
+            write += static_cast<size_t>(n);
+        }
+    }
+
+    const char *GetPlatformName(uint32_t platformId)
+    {
+        switch (platformId)
+        {
+        case 30u:
+            return "Windows XP/CE";
+        case 40u:
+            return "Windows 7";
+        case 50u:
+            return "Windows 10";
+        case 60u:
+            return "Windows 11/Server 2022";
+        case 100u:
+            return "Linux";
+        default:
+            return nullptr;
+        }
+    }
+
+    bool TryReadBuildNumber(const uint8_t *src, size_t len, uint32_t *outBuild)
+    {
+        if (!src || !outBuild)
+        {
+            return false;
+        }
+
+        // 常见场景: 4 字节小端 build（如 19045、26100）。
+        if (len >= 4)
+        {
+            const uint32_t v = ReadLe32(src);
+            if (v >= 1000u && v <= 200000u)
+            {
+                *outBuild = v;
+                return true;
+            }
+        }
+
+        // 回退: 2 字节版本号（较少见，仅在合理范围内接受）。
+        if (len >= 2)
+        {
+            const uint32_t v = static_cast<uint32_t>(ReadLe16(src));
+            if (v >= 100u && v <= 65535u)
+            {
+                *outBuild = v;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    const char *GetWindowsNameByVersion(uint32_t major, uint32_t minor)
+    {
+        if (major == 10u)
+        {
+            return "Windows 10";
+        }
+        if (major == 6u && minor == 3u)
+        {
+            return "Windows 8.1";
+        }
+        if (major == 6u && minor == 2u)
+        {
+            return "Windows 8";
+        }
+        if (major == 6u && minor == 1u)
+        {
+            return "Windows 7";
+        }
+        if (major == 6u && minor == 0u)
+        {
+            return "Windows Vista";
+        }
+        if (major == 5u && minor == 1u)
+        {
+            return "Windows XP";
+        }
+        return nullptr;
+    }
+
+    bool TryParseOsVersionInfoTag(const uint8_t *src,
+                                  size_t len,
+                                  char *osText,
+                                  size_t osTextSize,
+                                  char *serviceText,
+                                  size_t serviceTextSize,
+                                  uint32_t *outBuild)
+    {
+        // 解析 Win32 OSVERSIONINFOEX 风格结构：
+        // DWORD size(常见 0x114), major, minor, build, platform, WCHAR csd[128]
+        if (!src || len < 20 || !osText || osTextSize == 0)
+        {
+            return false;
+        }
+
+        const uint32_t structSize = ReadLe32(src + 0);
+        const uint32_t major = ReadLe32(src + 4);
+        const uint32_t minor = ReadLe32(src + 8);
+        const uint32_t build = ReadLe32(src + 12);
+        const uint32_t platform = ReadLe32(src + 16);
+
+        if (structSize < 20u || structSize > len || platform > 3u)
+        {
+            return false;
+        }
+
+        const char *winName = GetWindowsNameByVersion(major, minor);
+        if (!winName)
+        {
+            return false;
+        }
+
+        if (build > 0)
+        {
+            std::snprintf(osText, osTextSize, "%s(%u)", winName, build);
+            if (outBuild)
+            {
+                *outBuild = build;
+            }
+        }
+        else
+        {
+            std::snprintf(osText, osTextSize, "%s", winName);
+        }
+
+        if (serviceText && serviceTextSize > 0 && len > 20)
+        {
+            const size_t csdLen = (std::min)(len - 20, static_cast<size_t>(256));
+            CopyUtf16LeAsciiField(serviceText, serviceTextSize, src + 20, csdLen);
+        }
+
+        return true;
+    }
+
+    void ComposeOsVersionText(char *dst,
+                              size_t dstSize,
+                              uint32_t platformId,
+                              bool hasBuild,
+                              uint32_t buildNumber)
+    {
+        if (!dst || dstSize == 0)
+        {
+            return;
+        }
+
+        const char *platformName = GetPlatformName(platformId);
+        if (platformName)
+        {
+            if (hasBuild)
+            {
+                std::snprintf(dst, dstSize, "%s(%u)", platformName, buildNumber);
+                return;
+            }
+            std::snprintf(dst, dstSize, "%s", platformName);
+            return;
+        }
+
+        if (hasBuild)
+        {
+            std::snprintf(dst, dstSize, "Build(%u)", buildNumber);
+        }
+    }
+
+    bool TryReadPlatformId(const uint8_t *src, size_t len, uint32_t *outValue)
+    {
+        if (!src || !outValue)
+        {
+            return false;
+        }
+        if (len == 1)
+        {
+            *outValue = static_cast<uint32_t>(src[0]);
+            return true;
+        }
+        if (len == 2)
+        {
+            *outValue = static_cast<uint32_t>(ReadLe16(src));
+            return true;
+        }
+        if (len >= 4)
+        {
+            *outValue = ReadLe32(src);
+            return true;
+        }
+        return false;
+    }
+
     bool LooksLikeUtf16Le(const uint8_t *src, size_t srcLen)
     {
         // 经验判断：高字节大量为 0，通常意味着 UTF-16LE 英文文本。
@@ -150,6 +401,11 @@ namespace
         std::memcpy(&outInfo->netId, payload, sizeof(AmsNetId));
         outInfo->adsPort = ReadLe16(payload + sizeof(AmsNetId));
 
+        uint32_t platformId = 0;
+        bool hasPlatformId = false;
+        uint32_t buildNumber = 0;
+        bool hasBuildNumber = false;
+
         size_t offset = sizeof(AmsAddr);
         const uint32_t tagCount = ReadLe32(payload + offset);
         offset += sizeof(uint32_t);
@@ -184,7 +440,7 @@ namespace
                 CopyTextField(outInfo->deviceName, sizeof(outInfo->deviceName), tagData, len);
                 break;
             case 0x0004:
-                // 服务文本块，常见为 UTF-16LE。
+                // 服务文本块；部分设备返回 OSVERSIONINFO 二进制结构。
                 if (LooksLikeUtf16Le(tagData, len))
                 {
                     CopyUtf16LeAsciiField(outInfo->serviceText, sizeof(outInfo->serviceText), tagData, len);
@@ -192,6 +448,36 @@ namespace
                 else
                 {
                     CopyTextField(outInfo->serviceText, sizeof(outInfo->serviceText), tagData, len);
+                }
+                if (!IsMostlyPrintableAscii(outInfo->serviceText))
+                {
+                    uint32_t parsedBuild = 0;
+                    if (TryParseOsVersionInfoTag(tagData,
+                                                 len,
+                                                 outInfo->osVersion,
+                                                 sizeof(outInfo->osVersion),
+                                                 outInfo->serviceText,
+                                                 sizeof(outInfo->serviceText),
+                                                 &parsedBuild))
+                    {
+                        if (parsedBuild > 0)
+                        {
+                            buildNumber = parsedBuild;
+                            hasBuildNumber = true;
+                        }
+                    }
+                    else
+                    {
+                        uint32_t tagPlatformId = 0;
+                        if (TryReadPlatformId(tagData, len, &tagPlatformId))
+                        {
+                            platformId = tagPlatformId;
+                            hasPlatformId = true;
+                        }
+
+                        // 未识别结构时，保留十六进制前缀便于诊断。
+                        CopyBinaryAsHexField(outInfo->serviceText, sizeof(outInfo->serviceText), tagData, len);
+                    }
                 }
                 break;
             case 0x0003:
@@ -204,14 +490,46 @@ namespace
                 }
                 break;
             case 0x0012:
-                // 系统标识字符串。
-                CopyTextField(outInfo->systemId, sizeof(outInfo->systemId), tagData, len);
+                // 设备指纹字符串。
+                CopyTextField(outInfo->fingerprint, sizeof(outInfo->fingerprint), tagData, len);
+                break;
+            case 0x0014:
+            {
+                // 部分设备会额外携带 OS 相关标签：可能是平台 ID，也可能是 build 号。
+                uint32_t tagPlatformId = 0;
+                if (TryReadPlatformId(tagData, len, &tagPlatformId))
+                {
+                    platformId = tagPlatformId;
+                    hasPlatformId = true;
+                }
+
+                uint32_t tagBuildNumber = 0;
+                if (TryReadBuildNumber(tagData, len, &tagBuildNumber))
+                {
+                    buildNumber = tagBuildNumber;
+                    hasBuildNumber = true;
+                }
+                break;
+            }
+            case 0x000F:
+                // 某些固件可能直接返回 OS 文本。
+                CopyTextField(outInfo->osVersion, sizeof(outInfo->osVersion), tagData, len);
                 break;
             default:
                 break;
             }
 
             offset += len;
+        }
+
+        // 仅当 osVersion 仍为空时，按标签组合出标准文本（如 Windows 10(26100)）。
+        if (outInfo->osVersion[0] == '\0')
+        {
+            ComposeOsVersionText(outInfo->osVersion,
+                                 sizeof(outInfo->osVersion),
+                                 hasPlatformId ? platformId : 0u,
+                                 hasBuildNumber,
+                                 buildNumber);
         }
 
         return true;
@@ -234,6 +552,140 @@ namespace
             }
         }
         return false;
+    }
+
+    bool IsGlobalBroadcast(const char *address)
+    {
+        return address && std::strcmp(address, "255.255.255.255") == 0;
+    }
+
+    bool IsSockAddrDuplicate(const std::vector<sockaddr_in> &items, const sockaddr_in &candidate)
+    {
+        for (const auto &item : items)
+        {
+            if (item.sin_addr.s_addr == candidate.sin_addr.s_addr && item.sin_port == candidate.sin_port)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::vector<sockaddr_in> BuildDirectedBroadcastTargets(uint16_t portNetworkOrder)
+    {
+        std::vector<sockaddr_in> targets;
+
+#ifdef _WIN32
+        ULONG outBufLen = 0;
+        if (GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, nullptr, nullptr, &outBufLen) != ERROR_BUFFER_OVERFLOW)
+        {
+            return targets;
+        }
+
+        std::vector<uint8_t> buffer(outBufLen, 0);
+        PIP_ADAPTER_ADDRESSES adapters = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+        if (GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, nullptr, adapters, &outBufLen) != NO_ERROR)
+        {
+            return targets;
+        }
+
+        for (PIP_ADAPTER_ADDRESSES adapter = adapters; adapter != nullptr; adapter = adapter->Next)
+        {
+            if (adapter->OperStatus != IfOperStatusUp)
+            {
+                continue;
+            }
+
+            for (PIP_ADAPTER_UNICAST_ADDRESS addr = adapter->FirstUnicastAddress;
+                 addr != nullptr;
+                 addr = addr->Next)
+            {
+                if (!addr->Address.lpSockaddr || addr->Address.lpSockaddr->sa_family != AF_INET)
+                {
+                    continue;
+                }
+
+                sockaddr_in *ipv4 = reinterpret_cast<sockaddr_in *>(addr->Address.lpSockaddr);
+                uint32_t ipHost = ntohl(ipv4->sin_addr.s_addr);
+                ULONG prefix = addr->OnLinkPrefixLength;
+                if (prefix > 32)
+                {
+                    prefix = 32;
+                }
+
+                uint32_t maskHost = 0;
+                if (prefix > 0)
+                {
+                    maskHost = (prefix == 32) ? 0xffffffffu : (0xffffffffu << (32 - prefix));
+                }
+                const uint32_t broadcastHost = ipHost | (~maskHost);
+
+                sockaddr_in target;
+                std::memset(&target, 0, sizeof(target));
+                target.sin_family = AF_INET;
+                target.sin_port = portNetworkOrder;
+                target.sin_addr.s_addr = htonl(broadcastHost);
+
+                if (!IsSockAddrDuplicate(targets, target))
+                {
+                    targets.push_back(target);
+                }
+            }
+        }
+#else
+        struct ifaddrs *ifaddr = nullptr;
+        if (getifaddrs(&ifaddr) != 0 || !ifaddr)
+        {
+            return targets;
+        }
+
+        for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next)
+        {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
+            {
+                continue;
+            }
+            if ((ifa->ifa_flags & IFF_UP) == 0)
+            {
+                continue;
+            }
+            if (!ifa->ifa_netmask)
+            {
+                continue;
+            }
+
+            const auto *ip = reinterpret_cast<const sockaddr_in *>(ifa->ifa_addr);
+            const auto *mask = reinterpret_cast<const sockaddr_in *>(ifa->ifa_netmask);
+            const uint32_t ipHost = ntohl(ip->sin_addr.s_addr);
+            const uint32_t maskHost = ntohl(mask->sin_addr.s_addr);
+            const uint32_t broadcastHost = ipHost | (~maskHost);
+
+            sockaddr_in target;
+            std::memset(&target, 0, sizeof(target));
+            target.sin_family = AF_INET;
+            target.sin_port = portNetworkOrder;
+            target.sin_addr.s_addr = htonl(broadcastHost);
+
+            if (!IsSockAddrDuplicate(targets, target))
+            {
+                targets.push_back(target);
+            }
+        }
+
+        freeifaddrs(ifaddr);
+#endif
+
+        return targets;
+    }
+
+    std::string FormatIpV4(const in_addr &addr)
+    {
+        char ipText[INET_ADDRSTRLEN] = {0};
+        if (inet_ntop(AF_INET, &addr, ipText, sizeof(ipText)) == nullptr)
+        {
+            return std::string("<invalid-ip>");
+        }
+        return std::string(ipText);
     }
 }
 
@@ -265,7 +717,16 @@ namespace adslite
 
             *pDeviceCount = 0;
 
-            InitSocketLibrary();
+            const int wsaState = InitSocketLibrary();
+            if (wsaState != 0)
+            {
+                LOG_ERROR("BroadcastDiscovery::Discover WSA init failed, code=" << wsaState);
+                return ADSERR_CLIENT_ERROR;
+            }
+
+            LOG_INFO("BroadcastDiscovery::Discover start target=" << broadcastOrSubnet
+                                                                  << " timeoutMs=" << timeoutMs
+                                                                  << " capacity=" << deviceCapacity);
 
             struct addrinfo hints;
             std::memset(&hints, 0, sizeof(hints));
@@ -276,6 +737,7 @@ namespace adslite
             struct addrinfo *results = nullptr;
             if (getaddrinfo(broadcastOrSubnet, "48899", &hints, &results) != 0 || !results)
             {
+                LOG_WARN("BroadcastDiscovery::Discover getaddrinfo failed for target=" << broadcastOrSubnet);
                 WSACleanup();
                 return ADSERR_CLIENT_INVALIDPARM;
             }
@@ -308,12 +770,18 @@ namespace adslite
             std::memcpy(request + 12 + sizeof(AmsAddr), &tagCountLe, sizeof(uint32_t));
 
             bool sent = false;
+            uint32_t sendOkCount = 0;
+            uint32_t sendFailCount = 0;
             for (struct addrinfo *rp = results; rp != nullptr; rp = rp->ai_next)
             {
                 if (rp->ai_family != AF_INET)
                 {
                     continue;
                 }
+
+                const auto *targetAddr = reinterpret_cast<const sockaddr_in *>(rp->ai_addr);
+                LOG_INFO("BroadcastDiscovery::Discover send target=" << FormatIpV4(targetAddr->sin_addr));
+
                 if (sendto(sock,
                            reinterpret_cast<const char *>(request),
                            static_cast<int>(sizeof(request)),
@@ -322,8 +790,40 @@ namespace adslite
                            static_cast<socklen_t>(rp->ai_addrlen)) == static_cast<int>(sizeof(request)))
                 {
                     sent = true;
+                    ++sendOkCount;
+                }
+                else
+                {
+                    ++sendFailCount;
+                    LOG_WARN("BroadcastDiscovery::Discover send failed wsa=" << WSAGetLastError());
                 }
             }
+
+            if (IsGlobalBroadcast(broadcastOrSubnet))
+            {
+                const auto directedTargets = BuildDirectedBroadcastTargets(htons(48899));
+                for (const auto &directed : directedTargets)
+                {
+                    LOG_INFO("BroadcastDiscovery::Discover extra send directed-broadcast=" << FormatIpV4(directed.sin_addr));
+                    if (sendto(sock,
+                               reinterpret_cast<const char *>(request),
+                               static_cast<int>(sizeof(request)),
+                               0,
+                               reinterpret_cast<const sockaddr *>(&directed),
+                               static_cast<socklen_t>(sizeof(directed))) == static_cast<int>(sizeof(request)))
+                    {
+                        sent = true;
+                        ++sendOkCount;
+                    }
+                    else
+                    {
+                        ++sendFailCount;
+                        LOG_WARN("BroadcastDiscovery::Discover directed send failed wsa=" << WSAGetLastError());
+                    }
+                }
+            }
+
+            LOG_INFO("BroadcastDiscovery::Discover send summary ok=" << sendOkCount << " fail=" << sendFailCount);
 
             if (!sent)
             {
@@ -335,6 +835,12 @@ namespace adslite
 
             std::vector<AdsLiteDiscoveryDeviceInfo> allFound;
             allFound.reserve(deviceCapacity > 0 ? deviceCapacity : 8);
+
+            uint32_t recvPackets = 0;
+            uint32_t recvMatchedHeader = 0;
+            uint32_t recvParseFailed = 0;
+            uint32_t recvDuplicated = 0;
+            uint32_t recvAccepted = 0;
 
             // 在超时窗口内持续收包，直到时间耗尽。
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
@@ -376,9 +882,12 @@ namespace adslite
                 {
                     continue;
                 }
+                ++recvPackets;
 
                 if (bytes < 12)
                 {
+                    ++recvParseFailed;
+                    LOG_WARN("BroadcastDiscovery::Discover drop short packet bytes=" << bytes);
                     continue;
                 }
 
@@ -388,8 +897,13 @@ namespace adslite
                 // 仅接受匹配本次请求的 SERVERINFO 响应包。
                 if (cookie != kUdpCookie || invokeId != kUdpInvokeId || service != kServerInfoResponse)
                 {
+                    LOG_INFO("BroadcastDiscovery::Discover ignore packet from=" << FormatIpV4(sender.sin_addr)
+                                                                                << " cookie=0x" << std::hex << cookie
+                                                                                << " invoke=" << std::dec << invokeId
+                                                                                << " service=0x" << std::hex << service << std::dec);
                     continue;
                 }
+                ++recvMatchedHeader;
 
                 AdsLiteDiscoveryDeviceInfo item;
                 if (!ParseServerInfoPayload(buffer + 12,
@@ -397,15 +911,28 @@ namespace adslite
                                             sender,
                                             &item))
                 {
+                    ++recvParseFailed;
+                    LOG_WARN("BroadcastDiscovery::Discover parse failed from=" << FormatIpV4(sender.sin_addr)
+                                                                               << " payloadBytes=" << (bytes - 12));
                     continue;
                 }
 
                 if (IsDuplicateDevice(allFound.data(), static_cast<uint32_t>(allFound.size()), item))
                 {
+                    ++recvDuplicated;
                     continue;
                 }
 
                 allFound.push_back(item);
+                ++recvAccepted;
+                LOG_INFO("BroadcastDiscovery::Discover accepted ip=" << item.ipAddress
+                                                                     << " netid="
+                                                                     << static_cast<int>(item.netId.b[0]) << "."
+                                                                     << static_cast<int>(item.netId.b[1]) << "."
+                                                                     << static_cast<int>(item.netId.b[2]) << "."
+                                                                     << static_cast<int>(item.netId.b[3]) << "."
+                                                                     << static_cast<int>(item.netId.b[4]) << "."
+                                                                     << static_cast<int>(item.netId.b[5]));
             }
 
             freeaddrinfo(results);
@@ -419,9 +946,19 @@ namespace adslite
                 pDevices[i] = allFound[i];
             }
 
+            LOG_INFO("BroadcastDiscovery::Discover recv summary packets=" << recvPackets
+                                                                          << " matchedHeader=" << recvMatchedHeader
+                                                                          << " parseFailed=" << recvParseFailed
+                                                                          << " duplicated=" << recvDuplicated
+                                                                          << " accepted=" << recvAccepted);
+
             // 语义约定：未发现任何设备返回超时，发现到至少一台返回成功。
             if (*pDeviceCount == 0)
             {
+                if (IsGlobalBroadcast(broadcastOrSubnet))
+                {
+                    LOG_WARN("BroadcastDiscovery::Discover no device via global broadcast; try directed broadcast like 192.168.x.255");
+                }
                 return ADSERR_CLIENT_SYNCTIMEOUT;
             }
             return ADSERR_NOERR;
