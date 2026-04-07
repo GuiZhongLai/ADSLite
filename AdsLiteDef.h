@@ -333,8 +333,9 @@ extern "C"
         char ipAddress[16];
         char deviceName[ADSLITE_DISCOVERY_DEVICE_NAME_MAX];
         char serviceText[ADSLITE_DISCOVERY_SERVICE_TEXT_MAX];
+        char osVersion[ADSLITE_DISCOVERY_OS_VERSION_MAX];
         AdsVersion runtimeVersion;
-        char systemId[ADSLITE_DISCOVERY_SYSTEM_ID_MAX];
+        char fingerprint[ADSLITE_DISCOVERY_FINGERPRINT_MAX];
         uint32_t rawTagMask;
     };
 
