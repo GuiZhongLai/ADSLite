@@ -105,7 +105,7 @@ int64_t StandaloneBackend::InitRouting(const char *addr, AmsNetId *ams)
                                                            << ", localNetId=" << AmsNetIdHelper::toString(localNetId)
                                                            << ", routeName=" << routeName);
 
-        ret = AddRemoteRoute(addr, localNetId, routeName, routeName);
+        ret = AddRemoteRoute(addr, localNetId, localIp, routeName);
         if (ret != 0)
         {
             LOG_WARN("StandaloneBackend::InitRouting AddRemoteRoute failed ret=0x" << std::hex << ret << std::dec);
