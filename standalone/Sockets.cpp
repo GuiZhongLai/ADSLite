@@ -125,9 +125,12 @@ bool IpV4::operator==(const IpV4 &ref) const
 }
 
 Socket::Socket(const struct addrinfo *const host, const int type)
-	: m_WSAInitialized(!InitSocketLibrary()), m_DestAddr(SOCK_DGRAM == type ? reinterpret_cast<const struct sockaddr *>(
-																				  &m_SockAddress)
-																			: nullptr),
+	: m_WSAInitialized(!InitSocketLibrary()),
+	  m_Socket(INVALID_SOCKET),
+	  m_Closed(false),
+	  m_DestAddr(SOCK_DGRAM == type ? reinterpret_cast<const struct sockaddr *>(
+										  &m_SockAddress)
+									: nullptr),
 	  m_DestAddrLen(0)
 {
 	for (auto rp = host; rp; rp = rp->ai_next)
@@ -167,8 +170,7 @@ Socket::Socket(const struct addrinfo *const host, const int type)
 
 Socket::~Socket()
 {
-	Shutdown();
-	closesocket(m_Socket);
+	Close();
 
 	if (m_WSAInitialized)
 	{
@@ -176,9 +178,27 @@ Socket::~Socket()
 	}
 }
 
+void Socket::Close()
+{
+	bool expected = false;
+	if (!m_Closed.compare_exchange_strong(expected, true))
+	{
+		return;
+	}
+
+	if (m_Socket != INVALID_SOCKET)
+	{
+		shutdown(m_Socket, SHUT_RDWR);
+		closesocket(m_Socket);
+	}
+}
+
 void Socket::Shutdown()
 {
-	shutdown(m_Socket, SHUT_RDWR);
+	if (!m_Closed.load() && (m_Socket != INVALID_SOCKET))
+	{
+		shutdown(m_Socket, SHUT_RDWR);
+	}
 }
 
 size_t Socket::read(uint8_t *buffer, size_t maxBytes, timeval *timeout, SocketError &error) const

@@ -68,15 +68,19 @@ AmsConnection::DispatcherListGet(const VirtualConnection &connection)
 
 AmsConnection::AmsConnection(Router &__router,
 							 const struct addrinfo *const destination)
-	: router(__router), socket(destination), refCount(0), invokeId(0), ownIp(socket.Connect())
+	: router(__router), socket(destination), stopping(false), refCount(0), invokeId(0), ownIp(socket.Connect())
 {
 	receiver = std::thread(&AmsConnection::TryRecv, this);
 }
 
 AmsConnection::~AmsConnection()
 {
-	socket.Shutdown();
-	receiver.join();
+	stopping.store(true);
+	socket.Close();
+	if (receiver.joinable())
+	{
+		receiver.join();
+	}
 }
 
 SharedDispatcher
@@ -207,19 +211,53 @@ void AmsResponse::Release()
 	request.store(nullptr);
 }
 
-void AmsConnection::Receive(void *buffer, size_t bytesToRead,
+bool AmsConnection::HandleReadError(SocketError error) const
+{
+	if (error == SocketError::None)
+	{
+		return true;
+	}
+
+	if (error == SocketError::Timeout)
+	{
+		throw Socket::TimeoutEx("select() timeout");
+	}
+
+	if (stopping.load() &&
+		(error == SocketError::ConnectionClosed ||
+		 error == SocketError::NotSocket ||
+		 error == SocketError::IoError))
+	{
+		return false;
+	}
+
+	if (error == SocketError::ConnectionClosed)
+	{
+		throw std::runtime_error("connection closed by remote");
+	}
+
+	throw std::runtime_error("socket read failed");
+}
+
+bool AmsConnection::Receive(void *buffer, size_t bytesToRead,
 							timeval *timeout) const
 {
 	auto pos = reinterpret_cast<uint8_t *>(buffer);
 	while (bytesToRead)
 	{
-		const size_t bytesRead = socket.read(pos, bytesToRead, timeout);
+		SocketError error = SocketError::None;
+		const size_t bytesRead = socket.read(pos, bytesToRead, timeout, error);
+		if (!HandleReadError(error))
+		{
+			return false;
+		}
 		bytesToRead -= bytesRead;
 		pos += bytesRead;
 	}
+	return true;
 }
 
-void AmsConnection::Receive(void *buffer, size_t bytesToRead,
+bool AmsConnection::Receive(void *buffer, size_t bytesToRead,
 							const Timepoint &deadline) const
 {
 	const auto now = std::chrono::steady_clock::now();
@@ -232,18 +270,21 @@ void AmsConnection::Receive(void *buffer, size_t bytesToRead,
 	}
 
 	timeval timeout{(long)(usec / 1000000), (int)(usec % 1000000)};
-	Receive(buffer, bytesToRead, &timeout);
+	return Receive(buffer, bytesToRead, &timeout);
 }
 
-void AmsConnection::ReceiveJunk(size_t bytesToRead) const
+bool AmsConnection::ReceiveJunk(size_t bytesToRead) const
 {
 	uint8_t buffer[1024];
 	while (bytesToRead > sizeof(buffer))
 	{
-		Receive(buffer, sizeof(buffer));
+		if (!Receive(buffer, sizeof(buffer)))
+		{
+			return false;
+		}
 		bytesToRead -= sizeof(buffer);
 	}
-	Receive(buffer, bytesToRead);
+	return Receive(buffer, bytesToRead);
 }
 
 template <class T>
@@ -273,9 +314,15 @@ void AmsConnection::ReceiveFrame(AmsResponse *const response, size_t bytesLeft,
 
 	try
 	{
-		Receive(&header, sizeof(header), request->deadline);
+		if (!Receive(&header, sizeof(header), request->deadline))
+		{
+			return;
+		}
 		bytesLeft -= sizeof(header);
-		Receive(request->buffer, bytesLeft, request->deadline);
+		if (!Receive(request->buffer, bytesLeft, request->deadline))
+		{
+			return;
+		}
 
 		if (request->bytesRead)
 		{
@@ -325,13 +372,19 @@ bool AmsConnection::ReceiveNotification(const AoEHeader &header)
 	auto chunk = ring.WriteChunk();
 	while (bytesLeft > chunk)
 	{
-		Receive(ring.write, chunk);
+		if (!Receive(ring.write, chunk))
+		{
+			return false;
+		}
 		ring.Write(chunk);
 		// We already checked bytesLeft > chunk, well it was not obvious enough for MSVC
 		bytesLeft -= static_cast<decltype(bytesLeft)>(chunk);
 		chunk = ring.WriteChunk();
 	}
-	Receive(ring.write, bytesLeft);
+	if (!Receive(ring.write, bytesLeft))
+	{
+		return false;
+	}
 	ring.Write(bytesLeft);
 	dispatcher->Notify();
 	return true;
@@ -345,7 +398,17 @@ void AmsConnection::TryRecv()
 	}
 	catch (const std::runtime_error &e)
 	{
-		LOG_INFO(e.what());
+		if (!stopping.load())
+		{
+			LOG_INFO(e.what());
+		}
+	}
+	catch (const std::exception &e)
+	{
+		if (!stopping.load())
+		{
+			LOG_INFO(e.what());
+		}
 	}
 }
 
@@ -353,20 +416,32 @@ void AmsConnection::Recv()
 {
 	AmsTcpHeader amsTcpHeader;
 	AoEHeader aoeHeader;
-	for (; ownIp;)
+	for (; ownIp && !stopping.load();)
 	{
-		Receive(amsTcpHeader);
+		if (!Receive(amsTcpHeader))
+		{
+			return;
+		}
 		if (amsTcpHeader.length() < sizeof(aoeHeader))
 		{
 			LOG_WARN("Frame to short to be AoE");
-			ReceiveJunk(amsTcpHeader.length());
+			if (!ReceiveJunk(amsTcpHeader.length()))
+			{
+				return;
+			}
 			continue;
 		}
 
-		Receive(aoeHeader);
+		if (!Receive(aoeHeader))
+		{
+			return;
+		}
 		if (aoeHeader.cmdId() == AoEHeader::DEVICE_NOTIFICATION)
 		{
-			ReceiveNotification(aoeHeader);
+			if (!ReceiveNotification(aoeHeader))
+			{
+				return;
+			}
 			continue;
 		}
 
@@ -375,7 +450,10 @@ void AmsConnection::Recv()
 		if (!response)
 		{
 			LOG_WARN("No response pending");
-			ReceiveJunk(aoeHeader.length());
+			if (!ReceiveJunk(aoeHeader.length()))
+			{
+				return;
+			}
 			continue;
 		}
 
@@ -402,7 +480,10 @@ void AmsConnection::Recv()
 		default:
 			LOG_WARN("Unkown AMS command id");
 			response->Notify(ADSERR_CLIENT_SYNCRESINVALID);
-			ReceiveJunk(aoeHeader.length());
+			if (!ReceiveJunk(aoeHeader.length()))
+			{
+				return;
+			}
 		}
 	}
 }

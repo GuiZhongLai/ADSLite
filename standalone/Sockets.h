@@ -7,6 +7,7 @@
 
 #include "Frame.h"
 #include "wrap_socket.h"
+#include <atomic>
 #include <stdexcept>
 #include <string>
 
@@ -51,6 +52,7 @@ struct Socket
 	size_t read(uint8_t *buffer, size_t maxBytes, timeval *timeout) const;
 	bool Select(timeval *timeout, SocketError &error) const;
 	size_t write(const Frame &frame) const;
+	void Close();
 	void Shutdown();
 
 	struct TimeoutEx : std::runtime_error
@@ -64,6 +66,7 @@ struct Socket
 protected:
 	int m_WSAInitialized;
 	SOCKET m_Socket;
+	mutable std::atomic<bool> m_Closed;
 	sockaddr_storage m_SockAddress;
 	const sockaddr *const m_DestAddr;
 	socklen_t m_DestAddrLen;
