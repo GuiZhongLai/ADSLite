@@ -6,6 +6,12 @@
 #include "Sockets.h"
 #include "Log.h"
 
+#if !(defined(_WIN32) && !defined(__CYGWIN__))
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#endif
+
 #include <algorithm>
 #include <cstring>
 #include <exception>
@@ -63,8 +69,15 @@ namespace bhf
 			ParseHostAndPort(host, service);
 
 			InitSocketLibrary();
-			struct addrinfo *results;
-			if (getaddrinfo(host.c_str(), service.c_str(), nullptr, &results))
+
+			/* IPv4 only (TwinCAT/ADS typical); avoids AAAA / dual-stack ordering and IPv6 connect attempts. */
+			struct addrinfo hints;
+			memset(&hints, 0, sizeof(hints));
+			hints.ai_family = AF_INET;
+			hints.ai_socktype = 0;
+			hints.ai_protocol = 0;
+			struct addrinfo *results = nullptr;
+			if (getaddrinfo(host.c_str(), service.c_str(), &hints, &results))
 			{
 				throw std::runtime_error("Invalid or unknown host: " + host);
 			}
@@ -84,6 +97,227 @@ static const struct addrinfo addrinfo = []()
 	a.ai_protocol = IPPROTO_TCP;
 	return a;
 }();
+
+/** Per-candidate TCP connect cap (reduces long kernel SYN retries on reconnect). */
+static constexpr int kTcpConnectTimeoutMs = 6000;
+
+#if !(defined(_WIN32) && !defined(__CYGWIN__))
+static bool skSetBlockingPosix(SOCKET sock, bool blocking, int &outErr)
+{
+	const int flags = fcntl(sock, F_GETFL, 0);
+	if (flags == -1)
+	{
+		outErr = errno;
+		return false;
+	}
+	const int newFlags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+	if (fcntl(sock, F_SETFL, newFlags) == -1)
+	{
+		outErr = errno;
+		return false;
+	}
+	return true;
+}
+
+static void skRestoreBlockingPosixBestEffort(SOCKET sock)
+{
+	int ign = 0;
+	(void)skSetBlockingPosix(sock, true, ign);
+}
+
+static bool skTcpConnectPosix(SOCKET sock, const struct sockaddr *addr,
+							  socklen_t addrlen, int &outErr)
+{
+	if (!skSetBlockingPosix(sock, false, outErr))
+	{
+		return false;
+	}
+
+	const int rc = ::connect(sock, addr, addrlen);
+	if (rc == 0)
+	{
+		if (!skSetBlockingPosix(sock, true, outErr))
+		{
+			return false;
+		}
+		outErr = 0;
+		return true;
+	}
+	if (errno == EISCONN)
+	{
+		if (!skSetBlockingPosix(sock, true, outErr))
+		{
+			return false;
+		}
+		outErr = 0;
+		return true;
+	}
+	if (errno != EINPROGRESS)
+	{
+		outErr = errno;
+		skRestoreBlockingPosixBestEffort(sock);
+		return false;
+	}
+
+	struct pollfd pfd = {};
+	pfd.fd = sock;
+	pfd.events = POLLOUT;
+	int pr = 0;
+	do
+	{
+		pr = poll(&pfd, 1, kTcpConnectTimeoutMs);
+	} while (pr < 0 && errno == EINTR);
+
+	if (pr == 0)
+	{
+		outErr = ETIMEDOUT;
+		skRestoreBlockingPosixBestEffort(sock);
+		return false;
+	}
+	if (pr < 0)
+	{
+		outErr = errno;
+		skRestoreBlockingPosixBestEffort(sock);
+		return false;
+	}
+	if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+	{
+		int soerr = 0;
+		socklen_t solen = sizeof(soerr);
+		if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &soerr, &solen) == 0 &&
+			soerr != 0)
+		{
+			outErr = soerr;
+		}
+		else
+		{
+			outErr = ECONNREFUSED;
+		}
+		skRestoreBlockingPosixBestEffort(sock);
+		return false;
+	}
+
+	int soerr = 0;
+	socklen_t solen = sizeof(soerr);
+	if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &soerr, &solen) != 0)
+	{
+		outErr = errno;
+		skRestoreBlockingPosixBestEffort(sock);
+		return false;
+	}
+	if (soerr != 0)
+	{
+		outErr = soerr;
+		skRestoreBlockingPosixBestEffort(sock);
+		return false;
+	}
+	if (!skSetBlockingPosix(sock, true, outErr))
+	{
+		return false;
+	}
+	outErr = 0;
+	return true;
+}
+#else // defined(_WIN32) && !defined(__CYGWIN__)
+static bool skSetBlockingWin(SOCKET sock, bool blocking, int &outErr)
+{
+	u_long mode = blocking ? 0UL : 1UL;
+	if (ioctlsocket(sock, FIONBIO, &mode) == SOCKET_ERROR)
+	{
+		outErr = WSAGetLastError();
+		return false;
+	}
+	return true;
+}
+
+static void skRestoreBlockingWinBestEffort(SOCKET sock)
+{
+	int ign = 0;
+	(void)skSetBlockingWin(sock, true, ign);
+}
+
+static bool skTcpConnectWin(SOCKET sock, const struct sockaddr *addr,
+							socklen_t addrlen, int &outErr)
+{
+	if (!skSetBlockingWin(sock, false, outErr))
+	{
+		return false;
+	}
+
+	const int namelen = static_cast<int>(addrlen);
+	const int cr = ::connect(sock, addr, namelen);
+	if (cr == 0)
+	{
+		if (!skSetBlockingWin(sock, true, outErr))
+		{
+			return false;
+		}
+		outErr = 0;
+		return true;
+	}
+
+	const int werr = WSAGetLastError();
+	if (werr != WSAEWOULDBLOCK)
+	{
+		outErr = werr;
+		skRestoreBlockingWinBestEffort(sock);
+		return false;
+	}
+
+	fd_set wfds;
+	FD_ZERO(&wfds);
+	FD_SET(sock, &wfds);
+	timeval tv;
+	tv.tv_sec = kTcpConnectTimeoutMs / 1000;
+	tv.tv_usec = (kTcpConnectTimeoutMs % 1000) * 1000;
+
+	const int sel = NATIVE_SELECT(0, nullptr, &wfds, nullptr, &tv);
+	if (sel == 0)
+	{
+		outErr = WSAETIMEDOUT;
+		skRestoreBlockingWinBestEffort(sock);
+		return false;
+	}
+	if (sel == SOCKET_ERROR)
+	{
+		outErr = WSAGetLastError();
+		skRestoreBlockingWinBestEffort(sock);
+		return false;
+	}
+
+	int soerr = 0;
+	int solen = sizeof(soerr);
+	if (getsockopt(sock, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&soerr),
+				   &solen) == SOCKET_ERROR)
+	{
+		outErr = WSAGetLastError();
+		skRestoreBlockingWinBestEffort(sock);
+		return false;
+	}
+	if (soerr != 0)
+	{
+		outErr = soerr;
+		skRestoreBlockingWinBestEffort(sock);
+		return false;
+	}
+	if (!skSetBlockingWin(sock, true, outErr))
+	{
+		return false;
+	}
+	outErr = 0;
+	return true;
+}
+#endif
+
+static bool skTcpConnectWithTimeout(SOCKET sock, const struct sockaddr *addr,
+									socklen_t addrlen, int &outErr)
+{
+#if defined(_WIN32) && !defined(__CYGWIN__)
+	return skTcpConnectWin(sock, addr, addrlen, outErr);
+#else
+	return skTcpConnectPosix(sock, addr, addrlen, outErr);
+#endif
+}
 
 uint32_t getIpv4(const std::string &addr)
 {
@@ -133,18 +367,21 @@ Socket::Socket(const struct addrinfo *const host, const int type)
 									: nullptr),
 	  m_DestAddrLen(0)
 {
+	int lastErr = 0;
 	for (auto rp = host; rp; rp = rp->ai_next)
 	{
 		m_Socket = socket(rp->ai_family, type, 0);
 		if (INVALID_SOCKET == m_Socket)
 		{
+			lastErr = WSAGetLastError();
 			continue;
 		}
 		if (SOCK_STREAM == type)
 		{
-			if (::connect(m_Socket, rp->ai_addr, rp->ai_addrlen))
+			if (!skTcpConnectWithTimeout(m_Socket, rp->ai_addr, rp->ai_addrlen,
+										 lastErr))
 			{
-				LOG_WARN("Socket(): connect failed");
+				LOG_WARN("Socket(): connect failed or timed out");
 				closesocket(m_Socket);
 				m_Socket = INVALID_SOCKET;
 				continue;
@@ -165,7 +402,8 @@ Socket::Socket(const struct addrinfo *const host, const int type)
 		return;
 	}
 	LOG_ERROR("Unable to create socket");
-	throw std::system_error(WSAGetLastError(), std::system_category());
+	const int errc = (lastErr != 0) ? lastErr : WSAGetLastError();
+	throw std::system_error(errc, std::system_category());
 }
 
 Socket::~Socket()

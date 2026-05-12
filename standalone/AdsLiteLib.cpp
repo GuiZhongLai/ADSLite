@@ -72,7 +72,7 @@ static long SendRecv(const std::string &remote, Frame &f, const uint32_t service
     f.reset();
 
     static constexpr auto headerLength = sizeof(serviceId) + sizeof(invokeId) + sizeof(kUdpCookie);
-    timeval timeout{5, 0};
+    timeval timeout{3, 0};
 
     SocketError sockErr = SocketError::None;
     s.read(f, &timeout, sockErr);

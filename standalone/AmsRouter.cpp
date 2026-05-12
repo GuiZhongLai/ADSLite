@@ -2,6 +2,7 @@
 #include "AmsAddr.h"
 #include "AmsNetId.h"
 
+#include <memory>
 #include <string>
 
 AmsRouter::AmsRouter(AmsNetId netId) : localAddr(netId)
@@ -119,21 +120,17 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 		connection_attempts.erase(ams);
 		connection_attempt_events.notify_all();
 
-		auto conn = connections.emplace(std::move(new_connection));
-		if (conn.second)
+		connections.push_back(std::move(new_connection));
+		AmsConnection *const inserted = connections.back().get();
+		/** 如果之前没有设置本地AmsNetId，则创建一个 */
+		if (AmsNetIdHelper::isEmpty(localAddr))
 		{
-			/** 如果之前没有设置本地AmsNetId，则创建一个 */
-			if (AmsNetIdHelper::isEmpty(localAddr))
-			{
-				localAddr = AmsNetIdHelper::create(conn.first->get()->ownIp);
-			}
-			conn.first->get()->refCount++;
-			mapping[ams] = conn.first->get();
-			routeHosts[ams] = host;
-			return !conn.first->get()->ownIp;
+			localAddr = AmsNetIdHelper::create(inserted->ownIp);
 		}
-
-		return -1;
+		inserted->refCount++;
+		mapping[ams] = inserted;
+		routeHosts[ams] = host;
+		return !inserted->ownIp;
 	}
 	catch (std::exception &e)
 	{
@@ -146,19 +143,22 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 
 void AmsRouter::DelRoute(const AmsNetId &ams)
 {
-	std::unique_lock<std::recursive_mutex> lock(mutex);
-
-	AwaitConnectionAttempts(ams, lock);
-
-	auto route = mapping.find(ams);
-	if (route != mapping.end())
+	std::unique_ptr<AmsConnection> deadConn;
 	{
-		AmsConnection *conn = route->second;
-		routeHosts.erase(ams);
-		if (0 == --conn->refCount)
+		std::unique_lock<std::recursive_mutex> lock(mutex);
+
+		AwaitConnectionAttempts(ams, lock);
+
+		auto route = mapping.find(ams);
+		if (route != mapping.end())
 		{
-			mapping.erase(route);
-			DeleteIfLastConnection(conn);
+			AmsConnection *conn = route->second;
+			routeHosts.erase(ams);
+			if (0 == --conn->refCount)
+			{
+				mapping.erase(route);
+				deadConn = DeleteIfLastConnection(conn);
+			}
 		}
 	}
 }
@@ -223,25 +223,28 @@ long AmsRouter::AdsRequest(AmsRequest &request)
 
 void AmsRouter::InvalidateRouteConnection(const AmsNetId &ams, const AmsConnection *expectedConnection)
 {
-	std::lock_guard<std::recursive_mutex> lock(mutex);
-	auto route = mapping.find(ams);
-	if (route == mapping.end())
+	std::unique_ptr<AmsConnection> deadConn;
 	{
-		return;
-	}
+		std::unique_lock<std::recursive_mutex> lock(mutex);
+		auto route = mapping.find(ams);
+		if (route == mapping.end())
+		{
+			return;
+		}
 
-	AmsConnection *conn = route->second;
-	if (expectedConnection && conn != expectedConnection)
-	{
-		return;
-	}
+		AmsConnection *conn = route->second;
+		if (expectedConnection && conn != expectedConnection)
+		{
+			return;
+		}
 
-	mapping.erase(route);
-	if (conn && conn->refCount > 0)
-	{
-		--conn->refCount;
+		mapping.erase(route);
+		if (conn && conn->refCount > 0)
+		{
+			--conn->refCount;
+		}
+		deadConn = DeleteIfLastConnection(conn);
 	}
-	DeleteIfLastConnection(conn);
 }
 
 bool AmsRouter::IsRecoverableTransportFailure(long status) const
@@ -255,24 +258,28 @@ void AmsRouter::AwaitConnectionAttempts(const AmsNetId &ams, std::unique_lock<st
 								   { return connection_attempts.find(ams) == connection_attempts.end(); });
 }
 
-void AmsRouter::DeleteIfLastConnection(const AmsConnection *conn)
+std::unique_ptr<AmsConnection> AmsRouter::DeleteIfLastConnection(const AmsConnection *conn)
 {
-	if (conn)
+	std::unique_ptr<AmsConnection> dead;
+	if (!conn)
 	{
-		for (const auto &r : mapping)
+		return dead;
+	}
+	for (const auto &r : mapping)
+	{
+		if (r.second == conn)
 		{
-			if (r.second == conn)
-			{
-				return;
-			}
-		}
-		for (auto it = connections.begin(); it != connections.end(); ++it)
-		{
-			if (conn == it->get())
-			{
-				connections.erase(it);
-				return;
-			}
+			return dead;
 		}
 	}
+	for (auto it = connections.begin(); it != connections.end(); ++it)
+	{
+		if (conn == it->get())
+		{
+			std::unique_ptr<AmsConnection> removed = std::move(*it);
+			connections.erase(it);
+			return removed;
+		}
+	}
+	return dead;
 }

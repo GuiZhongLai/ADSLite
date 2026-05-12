@@ -3,7 +3,9 @@
 #include "AmsNetId.h"
 #include "AmsConnection.h"
 
-#include <unordered_set>
+#include <map>
+#include <memory>
+#include <vector>
 
 class AmsRouter : Router
 {
@@ -27,14 +29,15 @@ private:
 	std::recursive_mutex mutex;
 	std::condition_variable_any connection_attempt_events;
 	std::map<AmsNetId, std::tuple<>> connection_attempts;
-	std::unordered_set<std::unique_ptr<AmsConnection>> connections;
+	std::vector<std::unique_ptr<AmsConnection>> connections;
 	std::map<AmsNetId, AmsConnection *> mapping;
 	std::map<AmsNetId, std::string> routeHosts;
 
 	std::array<AmsPort, NUM_PORTS_MAX> ports;
 
 	void AwaitConnectionAttempts(const AmsNetId &ams, std::unique_lock<std::recursive_mutex> &lock);
-	void DeleteIfLastConnection(const AmsConnection *conn);
+	/** If no route still references @a conn, removes it from @a connections (caller must destroy after releasing mutex). */
+	std::unique_ptr<AmsConnection> DeleteIfLastConnection(const AmsConnection *conn);
 	void InvalidateRouteConnection(const AmsNetId &ams, const AmsConnection *expectedConnection = nullptr);
 	bool IsRecoverableTransportFailure(long status) const;
 };

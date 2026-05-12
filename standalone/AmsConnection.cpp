@@ -3,6 +3,9 @@
 #include "Log.h"
 #include "AmsAddr.h"
 
+/** Max time recv thread may stay inside select() while idle (cable unplug / shutdown). */
+static constexpr int kRecvIdlePollMs = 500;
+
 AmsResponse::AmsResponse()
 	: request(nullptr), errorCode(WAITING_FOR_RESPONSE)
 {
@@ -76,6 +79,7 @@ AmsConnection::AmsConnection(Router &__router,
 AmsConnection::~AmsConnection()
 {
 	stopping.store(true);
+	socket.Shutdown();
 	socket.Close();
 	if (receiver.joinable())
 	{
@@ -257,6 +261,33 @@ bool AmsConnection::Receive(void *buffer, size_t bytesToRead,
 	return true;
 }
 
+bool AmsConnection::ReceiveWithIdlePoll(void *buffer, size_t bytesToRead) const
+{
+	auto pos = reinterpret_cast<uint8_t *>(buffer);
+	timeval idleTv{0, kRecvIdlePollMs * 1000};
+	while (bytesToRead)
+	{
+		SocketError error = SocketError::None;
+		const size_t bytesRead =
+			socket.read(pos, bytesToRead, &idleTv, error);
+		if (error == SocketError::Timeout)
+		{
+			if (stopping.load())
+			{
+				return false;
+			}
+			continue;
+		}
+		if (!HandleReadError(error))
+		{
+			return false;
+		}
+		bytesToRead -= bytesRead;
+		pos += bytesRead;
+	}
+	return true;
+}
+
 bool AmsConnection::Receive(void *buffer, size_t bytesToRead,
 							const Timepoint &deadline) const
 {
@@ -278,13 +309,13 @@ bool AmsConnection::ReceiveJunk(size_t bytesToRead) const
 	uint8_t buffer[1024];
 	while (bytesToRead > sizeof(buffer))
 	{
-		if (!Receive(buffer, sizeof(buffer)))
+		if (!ReceiveWithIdlePoll(buffer, sizeof(buffer)))
 		{
 			return false;
 		}
 		bytesToRead -= sizeof(buffer);
 	}
-	return Receive(buffer, bytesToRead);
+	return ReceiveWithIdlePoll(buffer, bytesToRead);
 }
 
 template <class T>
@@ -372,7 +403,7 @@ bool AmsConnection::ReceiveNotification(const AoEHeader &header)
 	auto chunk = ring.WriteChunk();
 	while (bytesLeft > chunk)
 	{
-		if (!Receive(ring.write, chunk))
+		if (!ReceiveWithIdlePoll(ring.write, chunk))
 		{
 			return false;
 		}
@@ -381,7 +412,7 @@ bool AmsConnection::ReceiveNotification(const AoEHeader &header)
 		bytesLeft -= static_cast<decltype(bytesLeft)>(chunk);
 		chunk = ring.WriteChunk();
 	}
-	if (!Receive(ring.write, bytesLeft))
+	if (!ReceiveWithIdlePoll(ring.write, bytesLeft))
 	{
 		return false;
 	}
@@ -418,7 +449,7 @@ void AmsConnection::Recv()
 	AoEHeader aoeHeader;
 	for (; ownIp && !stopping.load();)
 	{
-		if (!Receive(amsTcpHeader))
+		if (!ReceiveWithIdlePoll(&amsTcpHeader, sizeof(amsTcpHeader)))
 		{
 			return;
 		}
@@ -432,7 +463,7 @@ void AmsConnection::Recv()
 			continue;
 		}
 
-		if (!Receive(aoeHeader))
+		if (!ReceiveWithIdlePoll(&aoeHeader, sizeof(aoeHeader)))
 		{
 			return;
 		}

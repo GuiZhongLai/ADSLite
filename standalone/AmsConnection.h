@@ -100,6 +100,8 @@ private:
 				 timeval *timeout = nullptr) const;
 	bool Receive(void *buffer, size_t bytesToRead,
 				 const Timepoint &deadline) const;
+	/** Block-until-data reads with short select wakeups so cable loss / shutdown can progress. */
+	bool ReceiveWithIdlePoll(void *buffer, size_t bytesToRead) const;
 	template <class T>
 	bool Receive(T &buffer) const
 	{
