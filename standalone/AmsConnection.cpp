@@ -246,19 +246,31 @@ bool AmsConnection::HandleReadError(SocketError error) const
 bool AmsConnection::Receive(void *buffer, size_t bytesToRead,
 							timeval *timeout) const
 {
-	auto pos = reinterpret_cast<uint8_t *>(buffer);
-	while (bytesToRead)
+	/* Blocking (timeout == nullptr): loop until all bytes arrive. */
+	if (!timeout)
 	{
-		SocketError error = SocketError::None;
-		const size_t bytesRead = socket.read(pos, bytesToRead, timeout, error);
-		if (!HandleReadError(error))
+		auto pos = reinterpret_cast<uint8_t *>(buffer);
+		while (bytesToRead)
 		{
-			return false;
+			SocketError error = SocketError::None;
+			const size_t bytesRead = socket.read(pos, bytesToRead, nullptr, error);
+			if (!HandleReadError(error))
+			{
+				return false;
+			}
+			bytesToRead -= bytesRead;
+			pos += bytesRead;
 		}
-		bytesToRead -= bytesRead;
-		pos += bytesRead;
+		return true;
 	}
-	return true;
+
+	/* Timed: treat the initial timeval as a TOTAL budget across multi-chunk
+	 * reads. Socket::Select copies timeval (so Linux remaining-time is not
+	 * written back); convert once to an absolute deadline and recompute. */
+	const auto deadline = std::chrono::steady_clock::now() +
+						  std::chrono::seconds(timeout->tv_sec) +
+						  std::chrono::microseconds(timeout->tv_usec);
+	return Receive(buffer, bytesToRead, deadline);
 }
 
 bool AmsConnection::ReceiveWithIdlePoll(void *buffer, size_t bytesToRead) const

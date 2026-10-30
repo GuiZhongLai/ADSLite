@@ -43,12 +43,20 @@ namespace adslite
             const size_t dirLen = std::strlen(safeWorkingDirectory);
             const size_t cmdLen = std::strlen(safeCommandLine);
 
-            if (appLen > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) ||
-                dirLen > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) ||
-                cmdLen > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
+            const size_t maxU32 = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+            if (appLen > maxU32 || dirLen > maxU32 || cmdLen > maxU32)
             {
                 return ADSERR_CLIENT_INVALIDPARM;
             }
+
+            // 合计载荷（3 个长度头 + path/cwd/args 及各自 NUL）必须能放进 SyncWriteReq 的 uint32 长度。
+            constexpr size_t kLenHeaders = sizeof(uint32_t) * 3;
+            const size_t stringsAndNuls = appLen + dirLen + cmdLen + 3;
+            if (stringsAndNuls > maxU32 - kLenHeaders)
+            {
+                return ADSERR_CLIENT_INVALIDPARM;
+            }
+            const size_t totalPayload = kLenHeaders + stringsAndNuls;
 
             // AdsTool 布局：3 个 LE uint32（不含 NUL 的长度）+ path\0 + cwd\0 + args\0
             const uint32_t leAppLen = bhf::ads::htole(static_cast<uint32_t>(appLen));
@@ -56,7 +64,7 @@ namespace adslite
             const uint32_t leCmdLen = bhf::ads::htole(static_cast<uint32_t>(cmdLen));
 
             std::vector<uint8_t> payload;
-            payload.reserve(sizeof(uint32_t) * 3 + appLen + dirLen + cmdLen + 3);
+            payload.reserve(totalPayload);
 
             const uint8_t *headerBytes = reinterpret_cast<const uint8_t *>(&leAppLen);
             payload.insert(payload.end(), headerBytes, headerBytes + sizeof(uint32_t));
