@@ -130,6 +130,12 @@ namespace adslite
                                                                << status);
                     return status;
                 }
+                if (bytesRead != sizeof(deviceType))
+                {
+                    LOG_WARN("ListECatMasters: corrupt READDEVTYPE length for id=" << deviceId
+                                                                                  << " len=" << bytesRead);
+                    return ADSERR_DEVICE_INVALIDDATA;
+                }
                 deviceType = bhf::ads::letoh(deviceType);
 
                 AdsLiteECatMasterInfo info{};
