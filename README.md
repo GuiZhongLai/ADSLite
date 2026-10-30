@@ -11,6 +11,7 @@ ADSLite 是一个轻量级 ADS 通信库，提供统一 C API，并在运行时�
 - 路由辅助：`AdsLiteInitRouting` / `AdsLiteShutdownRouting`
 - 同步读写：`AdsLiteSyncReadReq` / `AdsLiteSyncWriteReq` / `AdsLiteSyncReadWriteReq`
 - 变量按名/按句柄读写
+- 系统服务启动进程：`AdsLiteStartProcess`（高级/隐藏能力）
 - 运行时后端自动选择与强制覆盖
 
 ## 后端选择规则
@@ -419,6 +420,25 @@ AdsLitePortClose(port);
 ```powershell
 $env:ADSLITE_BACKEND = "twincat"     # 或 standalone / auto
 ```
+
+## 高级能力：AdsLiteStartProcess（隐藏）
+
+`AdsLiteStartProcess` 通过系统服务 `SYSTEMSERVICE_STARTPROCESS` (500) 在目标设备上启动进程，协议与 Beckhoff AdsTool `startprocess` 对齐，请求发往 AMS 端口 10000。
+
+```cpp
+// 高级接口：一般业务无需直接使用。flags 可用 ADSLITE_STARTPROCESS_HIDDEN。
+AdsLiteStartProcess(port, &addr,
+                    "C:/Windows/System32/notepad.exe",
+                    nullptr,   // commandLine
+                    nullptr,   // workingDirectory
+                    0);
+```
+
+说明：
+
+- 载荷为 3 个小端 `uint32` 长度（不含 NUL）+ `path\0` + `cwd\0` + `args\0`
+- `commandLine` / `workingDirectory` 可为 `nullptr`（按空串发送）
+- 本能力默认不提供独立 example 工程
 
 ## 项目结构
 

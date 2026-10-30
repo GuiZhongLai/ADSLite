@@ -246,27 +246,41 @@ bool AmsConnection::HandleReadError(SocketError error) const
 bool AmsConnection::Receive(void *buffer, size_t bytesToRead,
 							timeval *timeout) const
 {
-	auto pos = reinterpret_cast<uint8_t *>(buffer);
-	while (bytesToRead)
+	/* Blocking (timeout == nullptr): loop until all bytes arrive. */
+	if (!timeout)
 	{
-		SocketError error = SocketError::None;
-		const size_t bytesRead = socket.read(pos, bytesToRead, timeout, error);
-		if (!HandleReadError(error))
+		auto pos = reinterpret_cast<uint8_t *>(buffer);
+		while (bytesToRead)
 		{
-			return false;
+			SocketError error = SocketError::None;
+			const size_t bytesRead = socket.read(pos, bytesToRead, nullptr, error);
+			if (!HandleReadError(error))
+			{
+				return false;
+			}
+			bytesToRead -= bytesRead;
+			pos += bytesRead;
 		}
-		bytesToRead -= bytesRead;
-		pos += bytesRead;
+		return true;
 	}
-	return true;
+
+	/* Timed: treat the initial timeval as a TOTAL budget across multi-chunk
+	 * reads. Socket::Select copies timeval (so Linux remaining-time is not
+	 * written back); convert once to an absolute deadline and recompute. */
+	const auto deadline = std::chrono::steady_clock::now() +
+						  std::chrono::seconds(timeout->tv_sec) +
+						  std::chrono::microseconds(timeout->tv_usec);
+	return Receive(buffer, bytesToRead, deadline);
 }
 
 bool AmsConnection::ReceiveWithIdlePoll(void *buffer, size_t bytesToRead) const
 {
 	auto pos = reinterpret_cast<uint8_t *>(buffer);
-	timeval idleTv{0, kRecvIdlePollMs * 1000};
 	while (bytesToRead)
 	{
+		/* Re-init every call: Linux select() mutates timeval; a zeroed leftover
+		 * would spin with immediate timeouts after the first idle poll. */
+		timeval idleTv{0, kRecvIdlePollMs * 1000};
 		SocketError error = SocketError::None;
 		const size_t bytesRead =
 			socket.read(pos, bytesToRead, &idleTv, error);
@@ -291,17 +305,31 @@ bool AmsConnection::ReceiveWithIdlePoll(void *buffer, size_t bytesToRead) const
 bool AmsConnection::Receive(void *buffer, size_t bytesToRead,
 							const Timepoint &deadline) const
 {
-	const auto now = std::chrono::steady_clock::now();
-	const auto usec = std::chrono::duration_cast<std::chrono::microseconds>(
-						  deadline - now)
-						  .count();
-	if (usec <= 0)
+	auto pos = reinterpret_cast<uint8_t *>(buffer);
+	while (bytesToRead)
 	{
-		throw Socket::TimeoutEx("deadline reached already!!!");
-	}
+		/* Recompute remaining time each read so a copied/non-mutating select
+		 * still respects the absolute deadline across multi-chunk receives. */
+		const auto now = std::chrono::steady_clock::now();
+		const auto usec = std::chrono::duration_cast<std::chrono::microseconds>(
+							  deadline - now)
+							  .count();
+		if (usec <= 0)
+		{
+			throw Socket::TimeoutEx("deadline reached already!!!");
+		}
 
-	timeval timeout{(long)(usec / 1000000), (int)(usec % 1000000)};
-	return Receive(buffer, bytesToRead, &timeout);
+		timeval timeout{(long)(usec / 1000000), (int)(usec % 1000000)};
+		SocketError error = SocketError::None;
+		const size_t bytesRead = socket.read(pos, bytesToRead, &timeout, error);
+		if (!HandleReadError(error))
+		{
+			return false;
+		}
+		bytesToRead -= bytesRead;
+		pos += bytesRead;
+	}
+	return true;
 }
 
 bool AmsConnection::ReceiveJunk(size_t bytesToRead) const

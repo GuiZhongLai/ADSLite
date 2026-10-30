@@ -96,8 +96,11 @@ private:
 					  uint32_t aoeError) const;
 	bool ReceiveNotification(const AoEHeader &header);
 	bool ReceiveJunk(size_t bytesToRead) const;
+	/** Multi-chunk read. nullptr timeout blocks; non-null timeval is a total
+	 * remaining-time budget across chunks (converted to an absolute deadline). */
 	bool Receive(void *buffer, size_t bytesToRead,
 				 timeval *timeout = nullptr) const;
+	/** Multi-chunk read that recomputes remaining time from @p deadline each chunk. */
 	bool Receive(void *buffer, size_t bytesToRead,
 				 const Timepoint &deadline) const;
 	/** Block-until-data reads with short select wakeups so cable loss / shutdown can progress. */
