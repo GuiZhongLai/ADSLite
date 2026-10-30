@@ -12,6 +12,7 @@ ADSLite 是一个轻量级 ADS 通信库，提供统一 C API，并在运行时�
 - 同步读写：`AdsLiteSyncReadReq` / `AdsLiteSyncWriteReq` / `AdsLiteSyncReadWriteReq`
 - 变量按名/按句柄读写
 - 系统服务启动进程：`AdsLiteStartProcess`（高级/隐藏能力）
+- EtherCAT Master 枚举：`AdsLiteListECatMasters`
 - 运行时后端自动选择与强制覆盖
 
 ## 后端选择规则
@@ -438,6 +439,56 @@ AdsLiteStartProcess(port, &addr,
 
 - 载荷为 3 个小端 `uint32` 长度（不含 NUL）+ `path\0` + `cwd\0` + `args\0`
 - `commandLine` / `workingDirectory` 可为 `nullptr`（按空串发送）
+- 本能力默认不提供独立 example 工程
+
+## EtherCAT Master NetId：AdsLiteListECatMasters
+
+`AdsLiteListECatMasters` 对齐 Beckhoff AdsTool `ecat list-masters`：对目标 IPC/Runtime 的 NetId 强制走 `AMSPORT_R0_IO` (300)，索引组 `0x5000` 依次 `READDEVCOUNT` → `READDEVIDS` → 按 id 读取 type / name / netId。
+
+与 `AdsLiteGetDeviceNetId`（UDP 查 Router NetId）不是一回事——本接口拿到的是 **ECAT Master** 的 AmsNetId，后续可对该 NetId 发起 CoE 等请求。
+
+接口原型：
+
+```cpp
+typedef struct {
+    uint16_t deviceId;
+    uint16_t deviceType;
+    AmsNetId netId;
+    char name[256];
+} AdsLiteECatMasterInfo;
+
+int64_t AdsLiteListECatMasters(uint16_t port,
+                               const AmsAddr *pAddr,
+                               AdsLiteECatMasterInfo *pMasters,
+                               uint32_t capacity,
+                               uint32_t *pCount,
+                               uint32_t *pBytesRequired);
+```
+
+参数与容量语义（对齐 `AdsLiteDiscoverDevices`）：
+
+- `pAddr`：IPC/Runtime 地址；内部会把 port 改成 `AMSPORT_R0_IO`
+- `pMasters`：输出数组，可为 `nullptr`（仅统计）
+- `capacity`：可写入项数；不足时只写前 N 项，`pCount` 仍是全部数量
+- `pBytesRequired`：`pCount * sizeof(AdsLiteECatMasterInfo)`（可选）
+
+典型用法：先 list 拿到某个 Master 的 `netId`，再对它做 CoE / 其他 ECAT 相关读写。
+
+```cpp
+AdsLiteECatMasterInfo masters[8] = {};
+uint32_t count = 0;
+uint32_t bytesRequired = 0;
+int64_t ret = AdsLiteListECatMasters(port, &ipcAddr, masters, 8, &count, &bytesRequired);
+if (ret == 0 && count > 0) {
+    AmsAddr ecatAddr{};
+    ecatAddr.netId = masters[0].netId;
+    // 再用 ecatAddr 发起 CoE 等请求……
+}
+```
+
+说明：
+
+- v1 不含 slaveCount，也不提供按 deviceId 单查
 - 本能力默认不提供独立 example 工程
 
 ## 项目结构

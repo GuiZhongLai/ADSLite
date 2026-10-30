@@ -341,6 +341,20 @@ extern "C"
         uint32_t rawTagMask;
     };
 
+
+    /**
+     * @brief EtherCAT Master 枚举结果项（AdsLiteListECatMasters）
+     *
+     * 对齐 Beckhoff AdsTool `ecat list-masters` 输出字段（不含 slaveCount）。
+     */
+    struct AdsLiteECatMasterInfo
+    {
+        uint16_t deviceId;
+        uint16_t deviceType;
+        AmsNetId netId;
+        char name[256];
+    };
+
 #pragma pack(pop)
 
     // =========================================================================

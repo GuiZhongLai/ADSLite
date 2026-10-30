@@ -10,7 +10,8 @@ namespace adslite
             : backend_(backend),
               targetSystemInfo_(backend),
               fileServiceClient_(backend, targetSystemInfo_),
-              startProcessClient_(backend)
+              startProcessClient_(backend),
+              ecatClient_(backend)
         {
         }
 
@@ -32,6 +33,11 @@ namespace adslite
         process::StartProcessClient &BackendServices::StartProcess()
         {
             return startProcessClient_;
+        }
+
+        ecat::ECatClient &BackendServices::ECat()
+        {
+            return ecatClient_;
         }
 
         BackendServices &GetBackendServices()
