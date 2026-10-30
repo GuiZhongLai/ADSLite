@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AdsECatService.h"
 #include "AdsFileService.h"
 #include "AdsStartProcessService.h"
 #include "IAdsBackend.h"
@@ -18,12 +19,14 @@ namespace adslite
             targetinfo::TargetSystemInfo &TargetInfo();
             file::FileServiceClient &FileService();
             process::StartProcessClient &StartProcess();
+            ecat::ECatClient &ECat();
 
         private:
             IAdsBackend &backend_;
             targetinfo::TargetSystemInfo targetSystemInfo_;
             file::FileServiceClient fileServiceClient_;
             process::StartProcessClient startProcessClient_;
+            ecat::ECatClient ecatClient_;
         };
 
         BackendServices &GetBackendServices();

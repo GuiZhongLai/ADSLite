@@ -538,6 +538,37 @@ extern "C"
                                              const char *workingDirectory,
                                              uint32_t flags);
 
+
+    // =========================================================================
+    // EtherCAT Master 枚举 API
+    // =========================================================================
+
+    /**
+     * @brief 枚举目标设备上的 EtherCAT Master
+     *
+     * 协议对齐 Beckhoff AdsLib ECatAccess::ListECatMasters / AdsTool `ecat list-masters`：
+     * 对目标 IPC/Runtime 的 NetId 强制改走 AMSPORT_R0_IO (300)，
+     * 索引组 0x5000：READDEVCOUNT → READDEVIDS → 按 deviceId 读 type/name/netId。
+     * 缓冲语义对齐 AdsLiteDiscoverDevices。
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标 IPC/Runtime AMS 地址（port 字段会被覆盖为 AMSPORT_R0_IO）
+     * @param[out] pMasters 输出数组（可为 nullptr，用于仅统计）
+     * @param[in] capacity pMasters 的可写项数量
+     * @param[out] pCount 实际 Master 数量（必填）
+     * @param[out] pBytesRequired 按全部数量计算所需字节数（可为 nullptr）
+     * @return 返回错误码，0 表示成功
+     *
+     * @note v1 不含 slaveCount，也不提供按 deviceId 单查。
+     * @note 拿到 Master 的 netId 后，可再对其发起 CoE / 其他 ECAT 相关请求。
+     */
+    ADS_LITE_API int64_t AdsLiteListECatMasters(uint16_t port,
+                                                const AmsAddr *pAddr,
+                                                AdsLiteECatMasterInfo *pMasters,
+                                                uint32_t capacity,
+                                                uint32_t *pCount,
+                                                uint32_t *pBytesRequired);
+
     // =========================================================================
     // 异步操作 API
     // =========================================================================

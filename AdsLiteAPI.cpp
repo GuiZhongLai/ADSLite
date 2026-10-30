@@ -8,6 +8,7 @@
 
 #include "AdsLiteAPI.h"
 #include "backend/AdsFileService.h"
+#include "backend/AdsECatService.h"
 #include "backend/AdsStartProcessService.h"
 #include "backend/BackendServices.h"
 #include "backend/BackendSelector.h"
@@ -43,6 +44,11 @@ namespace
     adslite::process::StartProcessClient &StartProcess()
     {
         return Services().StartProcess();
+    }
+
+    adslite::ecat::ECatClient &ECat()
+    {
+        return Services().ECat();
     }
 }
 
@@ -347,6 +353,16 @@ int64_t AdsLiteStartProcess(uint16_t port,
                                        commandLine,
                                        workingDirectory,
                                        flags);
+}
+
+int64_t AdsLiteListECatMasters(uint16_t port,
+                               const AmsAddr *pAddr,
+                               AdsLiteECatMasterInfo *pMasters,
+                               uint32_t capacity,
+                               uint32_t *pCount,
+                               uint32_t *pBytesRequired)
+{
+    return ECat().ListECatMasters(port, pAddr, pMasters, capacity, pCount, pBytesRequired);
 }
 
 // =========================================================================

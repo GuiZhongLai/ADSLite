@@ -14,6 +14,7 @@ set(SOURCES
   backend/NetworkUtils.cpp
   backend/AdsFileService.cpp
   backend/AdsStartProcessService.cpp
+  backend/AdsECatService.cpp
   backend/TargetSystemInfo.cpp
 
   standalone/AdsLiteLib.cpp
