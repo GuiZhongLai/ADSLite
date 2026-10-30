@@ -9,7 +9,8 @@ namespace adslite
         BackendServices::BackendServices(IAdsBackend &backend)
             : backend_(backend),
               targetSystemInfo_(backend),
-              fileServiceClient_(backend, targetSystemInfo_)
+              fileServiceClient_(backend, targetSystemInfo_),
+              startProcessClient_(backend)
         {
         }
 
@@ -26,6 +27,11 @@ namespace adslite
         file::FileServiceClient &BackendServices::FileService()
         {
             return fileServiceClient_;
+        }
+
+        process::StartProcessClient &BackendServices::StartProcess()
+        {
+            return startProcessClient_;
         }
 
         BackendServices &GetBackendServices()

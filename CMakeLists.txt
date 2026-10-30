@@ -13,6 +13,7 @@ set(SOURCES
   backend/TwinCATBackend.cpp
   backend/NetworkUtils.cpp
   backend/AdsFileService.cpp
+  backend/AdsStartProcessService.cpp
   backend/TargetSystemInfo.cpp
 
   standalone/AdsLiteLib.cpp

@@ -527,13 +527,23 @@ bool Socket::Select(timeval *timeout, SocketError &error) const
 	FD_ZERO(&readSockets);
 	FD_SET(m_Socket, &readSockets);
 
+	/* Linux select() mutates timeval to remaining time; copy so callers keep
+	 * their original timeout (idle poll / reconnect loops). */
+	timeval timeoutCopy;
+	timeval *selectTimeout = timeout;
+	if (timeout)
+	{
+		timeoutCopy = *timeout;
+		selectTimeout = &timeoutCopy;
+	}
+
 	/* wait for receive data */
 	const int state = NATIVE_SELECT(m_Socket + 1, &readSockets, nullptr,
-									nullptr, timeout);
+									nullptr, selectTimeout);
 	if (0 == state)
 	{
 		error = SocketError::Timeout;
-		LOG_WARN("select() timeout");
+		/* Normal idle/poll timeouts are expected — do not spam logs. */
 		return false;
 	}
 

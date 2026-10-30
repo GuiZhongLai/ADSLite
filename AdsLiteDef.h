@@ -403,6 +403,16 @@ extern "C"
     };
 
     /**
+     * @brief AdsLiteStartProcess 标志位（高级/隐藏能力）
+     *
+     * 与 Beckhoff AdsTool startprocess --hidden 对齐：置位后写入 indexOffset 的 bit16。
+     */
+    enum AdsLiteStartProcessFlags
+    {
+        ADSLITE_STARTPROCESS_HIDDEN = 1u << 0 // Windows 目标隐藏应用窗口
+    };
+
+    /**
      * @brief 系统服务索引组枚举
      */
     enum nSystemServiceIndexGroups

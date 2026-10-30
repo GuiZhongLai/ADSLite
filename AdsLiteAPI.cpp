@@ -8,6 +8,7 @@
 
 #include "AdsLiteAPI.h"
 #include "backend/AdsFileService.h"
+#include "backend/AdsStartProcessService.h"
 #include "backend/BackendServices.h"
 #include "backend/BackendSelector.h"
 #include "backend/IAdsBackend.h"
@@ -37,6 +38,11 @@ namespace
     adslite::file::FileServiceClient &FileService()
     {
         return Services().FileService();
+    }
+
+    adslite::process::StartProcessClient &StartProcess()
+    {
+        return Services().StartProcess();
     }
 }
 
@@ -325,6 +331,22 @@ int64_t AdsLiteFileList(uint16_t port,
                                   nameBufferLength,
                                   pBytesRequired,
                                   pItemCount);
+}
+
+
+int64_t AdsLiteStartProcess(uint16_t port,
+                            const AmsAddr *pAddr,
+                            const char *applicationPath,
+                            const char *commandLine,
+                            const char *workingDirectory,
+                            uint32_t flags)
+{
+    return StartProcess().StartProcess(port,
+                                       pAddr,
+                                       applicationPath,
+                                       commandLine,
+                                       workingDirectory,
+                                       flags);
 }
 
 // =========================================================================

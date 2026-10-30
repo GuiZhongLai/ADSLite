@@ -507,6 +507,37 @@ extern "C"
                                          uint32_t *pBytesRequired,
                                          uint32_t *pItemCount);
 
+
+    // =========================================================================
+    // 系统服务高级 API（隐藏能力，一般业务无需直接使用）
+    // =========================================================================
+
+    /**
+     * @brief 在目标设备上启动进程（高级/隐藏能力）
+     *
+     * 通过系统服务 SYSTEMSERVICE_STARTPROCESS (500) 发起 SyncWriteReq，
+     * 载荷布局与 Beckhoff AdsTool startprocess 一致：
+     * 3 个小端 uint32 长度（不含 NUL）+ path\0 + cwd\0 + args\0。
+     * 请求固定发往 AMS 端口 10000。
+     *
+     * @param[in] port 本地端口号
+     * @param[in] pAddr 目标设备 AMS 地址（port 字段会被覆盖为 10000）
+     * @param[in] applicationPath 可执行文件完整路径（必填）
+     * @param[in] commandLine 命令行参数（可为 nullptr，表示空）
+     * @param[in] workingDirectory 工作目录（可为 nullptr，表示空）
+     * @param[in] flags 标志位，见 AdsLiteStartProcessFlags；
+     *                  例如 ADSLITE_STARTPROCESS_HIDDEN 在 Windows 目标隐藏窗口
+     * @return 返回错误码，0 表示成功
+     *
+     * @note 本接口属于高级能力，默认不在示例目录中演示。
+     */
+    ADS_LITE_API int64_t AdsLiteStartProcess(uint16_t port,
+                                             const AmsAddr *pAddr,
+                                             const char *applicationPath,
+                                             const char *commandLine,
+                                             const char *workingDirectory,
+                                             uint32_t flags);
+
     // =========================================================================
     // 异步操作 API
     // =========================================================================
