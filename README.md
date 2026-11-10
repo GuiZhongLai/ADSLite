@@ -111,7 +111,7 @@ AdsLitePortClose(port);
 AdsLiteShutdownRouting(&target);
 ```
 
-传输失败或重连失败（DNS 解析失败、TCP 连接失败，以及写长度不匹配后的重连）返回错误码，例如 `GLOBALERR_TARGET_PORT`、`GLOBALERR_NO_MEMORY`，不会向调用方抛出 C++ 异常。
+传输失败或重连失败（DNS 解析失败、TCP 连接失败，以及写长度不匹配后的重连）返回错误码，例如 `GLOBALERR_TARGET_PORT`、`GLOBALERR_NO_MEMORY`，不会向调用方抛出 C++ 异常。套接字已关闭或无效，或连接已被拆除时，读写返回错误码，而不是在 `sendto` 中崩溃。
 
 ### 2.1 广播发现设备（固定结构返回）
 

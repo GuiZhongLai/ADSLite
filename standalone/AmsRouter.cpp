@@ -138,7 +138,7 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 			if (conn->IsConnectedTo(hostAddresses.get()))
 			{
 				conn->refCount++;
-				mapping[ams] = conn.get();
+				mapping[ams] = conn;
 				routeHosts[ams] = host;
 				return 0;
 			}
@@ -148,13 +148,15 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 		attemptTracked = true;
 		lock.unlock();
 
-		auto new_connection = std::unique_ptr<AmsConnection>(new AmsConnection{*this, hostAddresses.get()});
+		/* new 必须写在成员函数里：AmsRouter 私有继承 Router，make_shared 的上下文无法转换。 */
+		std::unique_ptr<AmsConnection> owned(new AmsConnection{*this, hostAddresses.get()});
+		auto new_connection = std::shared_ptr<AmsConnection>(std::move(owned));
 		lock.lock();
 		connection_attempts.erase(ams);
 		attemptTracked = false;
 		connection_attempt_events.notify_all();
 
-		connections.push_back(std::move(new_connection));
+		connections.push_back(new_connection);
 		AmsConnection *const inserted = connections.back().get();
 		/** 如果之前没有设置本地AmsNetId，则创建一个 */
 		if (AmsNetIdHelper::isEmpty(localAddr))
@@ -162,7 +164,7 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 			localAddr = AmsNetIdHelper::create(inserted->ownIp);
 		}
 		inserted->refCount++;
-		mapping[ams] = inserted;
+		mapping[ams] = connections.back();
 		routeHosts[ams] = host;
 		return !inserted->ownIp;
 	}
@@ -182,7 +184,10 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 
 void AmsRouter::DelRoute(const AmsNetId &ams)
 {
-	std::unique_ptr<AmsConnection> deadConn;
+	/* Dropped after the lock so ~AmsConnection (join receiver) does not run while mutex is held.
+	 * An in-flight AdsRequest keeps its own shared_ptr, so this does not free a live request. */
+	std::shared_ptr<AmsConnection> routeConn;
+	std::shared_ptr<AmsConnection> deadConn;
 	{
 		std::unique_lock<std::recursive_mutex> lock(mutex);
 
@@ -191,18 +196,18 @@ void AmsRouter::DelRoute(const AmsNetId &ams)
 		auto route = mapping.find(ams);
 		if (route != mapping.end())
 		{
-			AmsConnection *conn = route->second;
+			routeConn = route->second;
 			routeHosts.erase(ams);
-			if (0 == --conn->refCount)
+			if (0 == --routeConn->refCount)
 			{
 				mapping.erase(route);
-				deadConn = DeleteIfLastConnection(conn);
+				deadConn = DeleteIfLastConnection(routeConn.get());
 			}
 		}
 	}
 }
 
-AmsConnection *AmsRouter::GetConnection(const AmsNetId &amsDest)
+std::shared_ptr<AmsConnection> AmsRouter::GetConnection(const AmsNetId &amsDest)
 {
 	std::lock_guard<std::recursive_mutex> lock(mutex);
 	const auto it = mapping.find(amsDest);
@@ -210,7 +215,7 @@ AmsConnection *AmsRouter::GetConnection(const AmsNetId &amsDest)
 	{
 		return it->second;
 	}
-	return nullptr;
+	return {};
 }
 
 long AmsRouter::AdsRequest(AmsRequest &request)
@@ -220,7 +225,12 @@ long AmsRouter::AdsRequest(AmsRequest &request)
 		*request.bytesRead = 0;
 	}
 
-	auto ads = GetConnection(request.destAddr.netId);
+	/**
+	 * 整个请求（含重连重试）持有连接。DelRoute / InvalidateRouteConnection
+	 * 只摘掉路由映射；只要这里还握着 shared_ptr，连接就不会析构，Write/sendto 不会用到已释放对象。
+	 * 重连完成前同时持有旧连接和新连接。
+	 */
+	const std::shared_ptr<AmsConnection> ads = GetConnection(request.destAddr.netId);
 	if (!ads)
 	{
 		return GLOBALERR_MISSING_ROUTE;
@@ -246,7 +256,7 @@ long AmsRouter::AdsRequest(AmsRequest &request)
 			host = hostIt->second;
 		}
 
-		InvalidateRouteConnection(request.destAddr.netId, ads);
+		InvalidateRouteConnection(request.destAddr.netId, ads.get());
 		const auto reconnectStatus = AddRoute(request.destAddr.netId, host);
 		if (reconnectStatus)
 		{
@@ -266,18 +276,20 @@ long AmsRouter::AdsRequest(AmsRequest &request)
 		return GLOBALERR_TARGET_PORT;
 	}
 
-	auto retryConnection = GetConnection(request.destAddr.netId);
+	const std::shared_ptr<AmsConnection> retryConnection = GetConnection(request.destAddr.netId);
 	if (!retryConnection)
 	{
 		return GLOBALERR_MISSING_ROUTE;
 	}
 
-	return retryConnection->AdsRequest(request, timeout);
+	const auto retryStatus = retryConnection->AdsRequest(request, timeout);
+	return retryStatus;
 }
 
 void AmsRouter::InvalidateRouteConnection(const AmsNetId &ams, const AmsConnection *expectedConnection)
 {
-	std::unique_ptr<AmsConnection> deadConn;
+	std::shared_ptr<AmsConnection> routeConn;
+	std::shared_ptr<AmsConnection> deadConn;
 	{
 		std::unique_lock<std::recursive_mutex> lock(mutex);
 		auto route = mapping.find(ams);
@@ -286,18 +298,18 @@ void AmsRouter::InvalidateRouteConnection(const AmsNetId &ams, const AmsConnecti
 			return;
 		}
 
-		AmsConnection *conn = route->second;
-		if (expectedConnection && conn != expectedConnection)
+		routeConn = route->second;
+		if (expectedConnection && routeConn.get() != expectedConnection)
 		{
 			return;
 		}
 
 		mapping.erase(route);
-		if (conn && conn->refCount > 0)
+		if (routeConn && routeConn->refCount > 0)
 		{
-			--conn->refCount;
+			--routeConn->refCount;
 		}
-		deadConn = DeleteIfLastConnection(conn);
+		deadConn = DeleteIfLastConnection(routeConn.get());
 	}
 }
 
@@ -312,16 +324,16 @@ void AmsRouter::AwaitConnectionAttempts(const AmsNetId &ams, std::unique_lock<st
 								   { return connection_attempts.find(ams) == connection_attempts.end(); });
 }
 
-std::unique_ptr<AmsConnection> AmsRouter::DeleteIfLastConnection(const AmsConnection *conn)
+std::shared_ptr<AmsConnection> AmsRouter::DeleteIfLastConnection(const AmsConnection *conn)
 {
-	std::unique_ptr<AmsConnection> dead;
+	std::shared_ptr<AmsConnection> dead;
 	if (!conn)
 	{
 		return dead;
 	}
 	for (const auto &r : mapping)
 	{
-		if (r.second == conn)
+		if (r.second.get() == conn)
 		{
 			return dead;
 		}
@@ -330,7 +342,7 @@ std::unique_ptr<AmsConnection> AmsRouter::DeleteIfLastConnection(const AmsConnec
 	{
 		if (conn == it->get())
 		{
-			std::unique_ptr<AmsConnection> removed = std::move(*it);
+			std::shared_ptr<AmsConnection> removed = std::move(*it);
 			connections.erase(it);
 			return removed;
 		}
