@@ -8,6 +8,8 @@
 #include "Frame.h"
 #include "wrap_socket.h"
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -74,6 +76,35 @@ protected:
 	Socket(const struct addrinfo *host, int type);
 	~Socket();
 	bool Select(timeval *timeout) const;
+
+private:
+	/** Serializes fd state. Close waits until in-flight send/recv/select finish,
+	 * then closesocket and stores INVALID_SOCKET. Syscalls use a snapshot fd
+	 * and do not run after that close. */
+	mutable std::mutex m_IoMutex;
+	mutable std::condition_variable m_IoCv;
+	mutable int m_InFlight = 0;
+
+	class FdHold
+	{
+	public:
+		explicit FdHold(const Socket &socket)
+			: m_Socket(socket)
+		{
+		}
+		~FdHold()
+		{
+			m_Socket.ReleaseFd();
+		}
+		FdHold(const FdHold &) = delete;
+		FdHold &operator=(const FdHold &) = delete;
+
+	private:
+		const Socket &m_Socket;
+	};
+
+	bool AcquireFd(SOCKET &sock, SocketError *error) const;
+	void ReleaseFd() const;
 };
 
 struct TcpSocket : Socket

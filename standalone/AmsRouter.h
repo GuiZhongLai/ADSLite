@@ -21,7 +21,8 @@ public:
 
 	long AddRoute(AmsNetId ams, const std::string &host);
 	void DelRoute(const AmsNetId &ams);
-	AmsConnection *GetConnection(const AmsNetId &amsDest);
+	/** Copy of the route's connection. The shared_ptr keeps it alive after the router lock is released. */
+	std::shared_ptr<AmsConnection> GetConnection(const AmsNetId &amsDest);
 	long AdsRequest(AmsRequest &request);
 
 private:
@@ -29,15 +30,17 @@ private:
 	std::recursive_mutex mutex;
 	std::condition_variable_any connection_attempt_events;
 	std::map<AmsNetId, std::tuple<>> connection_attempts;
-	std::vector<std::unique_ptr<AmsConnection>> connections;
-	std::map<AmsNetId, AmsConnection *> mapping;
+	std::vector<std::shared_ptr<AmsConnection>> connections;
+	std::map<AmsNetId, std::shared_ptr<AmsConnection>> mapping;
 	std::map<AmsNetId, std::string> routeHosts;
 
 	std::array<AmsPort, NUM_PORTS_MAX> ports;
 
 	void AwaitConnectionAttempts(const AmsNetId &ams, std::unique_lock<std::recursive_mutex> &lock);
-	/** If no route still references @a conn, removes it from @a connections (caller must destroy after releasing mutex). */
-	std::unique_ptr<AmsConnection> DeleteIfLastConnection(const AmsConnection *conn);
+	/** If no route still references @a conn, removes it from @a connections.
+	 *  Drop the returned shared_ptr after releasing the mutex. In-flight
+	 *  AdsRequest holders keep the object alive until they finish. */
+	std::shared_ptr<AmsConnection> DeleteIfLastConnection(const AmsConnection *conn);
 	void InvalidateRouteConnection(const AmsNetId &ams, const AmsConnection *expectedConnection = nullptr);
 	bool IsRecoverableTransportFailure(long status) const;
 };

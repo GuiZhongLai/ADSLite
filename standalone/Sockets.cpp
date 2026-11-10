@@ -365,7 +365,8 @@ Socket::Socket(const struct addrinfo *const host, const int type)
 	  m_DestAddr(SOCK_DGRAM == type ? reinterpret_cast<const struct sockaddr *>(
 										  &m_SockAddress)
 									: nullptr),
-	  m_DestAddrLen(0)
+	  m_DestAddrLen(0),
+	  m_InFlight(0)
 {
 	int lastErr = 0;
 	for (auto rp = host; rp; rp = rp->ai_next)
@@ -416,23 +417,131 @@ Socket::~Socket()
 	}
 }
 
+namespace
+{
+bool WaitReadable(SOCKET sock, timeval *timeout, SocketError &error)
+{
+	if (sock == INVALID_SOCKET)
+	{
+		error = SocketError::NotSocket;
+		return false;
+	}
+
+	/* prepare socket set for select() */
+	fd_set readSockets;
+	FD_ZERO(&readSockets);
+	FD_SET(sock, &readSockets);
+
+	/* Linux select() mutates timeval to remaining time; copy so callers keep
+	 * their original timeout (idle poll / reconnect loops). */
+	timeval timeoutCopy;
+	timeval *selectTimeout = timeout;
+	if (timeout)
+	{
+		timeoutCopy = *timeout;
+		selectTimeout = &timeoutCopy;
+	}
+
+	/* wait for receive data */
+	const int state = NATIVE_SELECT(sock + 1, &readSockets, nullptr,
+									nullptr, selectTimeout);
+	if (0 == state)
+	{
+		error = SocketError::Timeout;
+		/* Normal idle/poll timeouts are expected — do not spam logs. */
+		return false;
+	}
+
+	if (state == SOCKET_ERROR)
+	{
+		const auto lastError = WSAGetLastError();
+		if (lastError == WSAENOTSOCK)
+		{
+			error = SocketError::NotSocket;
+			LOG_WARN("select() failed: not a socket");
+		}
+		else
+		{
+			error = SocketError::IoError;
+			LOG_ERROR("select() failed with error: " << lastError);
+		}
+		return false;
+	}
+
+	/* and check if socket was correct */
+	if (!FD_ISSET(sock, &readSockets))
+	{
+		error = SocketError::IoError;
+		LOG_ERROR("something strange happen while waiting for socket in state: "
+				  << state);
+		return false;
+	}
+
+	error = SocketError::None;
+	return true;
+}
+}
+
+bool Socket::AcquireFd(SOCKET &sock, SocketError *error) const
+{
+	std::lock_guard<std::mutex> lock(m_IoMutex);
+	if (m_Closed.load() || (m_Socket == INVALID_SOCKET))
+	{
+		if (error)
+		{
+			*error = m_Closed.load() ? SocketError::ConnectionClosed
+									 : SocketError::NotSocket;
+		}
+		sock = INVALID_SOCKET;
+		return false;
+	}
+
+	sock = m_Socket;
+	++m_InFlight;
+	return true;
+}
+
+void Socket::ReleaseFd() const
+{
+	std::lock_guard<std::mutex> lock(m_IoMutex);
+	if (m_InFlight > 0)
+	{
+		--m_InFlight;
+	}
+	m_IoCv.notify_all();
+}
+
 void Socket::Close()
 {
-	bool expected = false;
-	if (!m_Closed.compare_exchange_strong(expected, true))
+	std::unique_lock<std::mutex> lock(m_IoMutex);
+	if (m_Closed.exchange(true))
 	{
+		m_IoCv.wait(lock, [this]()
+					{ return m_Socket == INVALID_SOCKET; });
 		return;
 	}
 
+	/* Wake select/recv/send blocked on this fd, then wait until those calls
+	 * leave the kernel before closesocket. m_Socket stays valid until then
+	 * and is never a closed descriptor. */
+	const SOCKET sock = m_Socket;
+	if (sock != INVALID_SOCKET)
+	{
+		shutdown(sock, SHUT_RDWR);
+	}
+	m_IoCv.wait(lock, [this]()
+				{ return m_InFlight == 0; });
 	if (m_Socket != INVALID_SOCKET)
 	{
-		shutdown(m_Socket, SHUT_RDWR);
 		closesocket(m_Socket);
+		m_Socket = INVALID_SOCKET;
 	}
+	m_IoCv.notify_all();
 }
 
 void Socket::Shutdown()
 {
+	std::lock_guard<std::mutex> lock(m_IoMutex);
 	if (!m_Closed.load() && (m_Socket != INVALID_SOCKET))
 	{
 		shutdown(m_Socket, SHUT_RDWR);
@@ -441,14 +550,21 @@ void Socket::Shutdown()
 
 size_t Socket::read(uint8_t *buffer, size_t maxBytes, timeval *timeout, SocketError &error) const
 {
-	if (!Select(timeout, error))
+	SOCKET sock = INVALID_SOCKET;
+	if (!AcquireFd(sock, &error))
+	{
+		return 0;
+	}
+	const FdHold hold(*this);
+
+	if (!WaitReadable(sock, timeout, error))
 	{
 		return 0;
 	}
 
 	const auto msvcMaxBytes = static_cast<int>(
 		std::min<size_t>(std::numeric_limits<int>::max(), maxBytes));
-	const int bytesRead = recv(m_Socket, reinterpret_cast<char *>(buffer),
+	const int bytesRead = recv(sock, reinterpret_cast<char *>(buffer),
 							   msvcMaxBytes, 0);
 	if (bytesRead > 0)
 	{
@@ -522,58 +638,13 @@ Frame &Socket::read(Frame &frame, timeval *timeout) const
 
 bool Socket::Select(timeval *timeout, SocketError &error) const
 {
-	/* prepare socket set for select() */
-	fd_set readSockets;
-	FD_ZERO(&readSockets);
-	FD_SET(m_Socket, &readSockets);
-
-	/* Linux select() mutates timeval to remaining time; copy so callers keep
-	 * their original timeout (idle poll / reconnect loops). */
-	timeval timeoutCopy;
-	timeval *selectTimeout = timeout;
-	if (timeout)
+	SOCKET sock = INVALID_SOCKET;
+	if (!AcquireFd(sock, &error))
 	{
-		timeoutCopy = *timeout;
-		selectTimeout = &timeoutCopy;
-	}
-
-	/* wait for receive data */
-	const int state = NATIVE_SELECT(m_Socket + 1, &readSockets, nullptr,
-									nullptr, selectTimeout);
-	if (0 == state)
-	{
-		error = SocketError::Timeout;
-		/* Normal idle/poll timeouts are expected — do not spam logs. */
 		return false;
 	}
-
-	if (state == SOCKET_ERROR)
-	{
-		const auto lastError = WSAGetLastError();
-		if (lastError == WSAENOTSOCK)
-		{
-			error = SocketError::NotSocket;
-			LOG_WARN("select() failed: not a socket");
-		}
-		else
-		{
-			error = SocketError::IoError;
-			LOG_ERROR("select() failed with error: " << lastError);
-		}
-		return false;
-	}
-
-	/* and check if socket was correct */
-	if (!FD_ISSET(m_Socket, &readSockets))
-	{
-		error = SocketError::IoError;
-		LOG_ERROR("something strange happen while waiting for socket in state: "
-				  << state);
-		return false;
-	}
-
-	error = SocketError::None;
-	return true;
+	const FdHold hold(*this);
+	return WaitReadable(sock, timeout, error);
 }
 
 size_t Socket::write(const Frame &frame) const
@@ -586,9 +657,23 @@ size_t Socket::write(const Frame &frame) const
 		return 0;
 	}
 
+	SOCKET sock = INVALID_SOCKET;
+	if (!AcquireFd(sock, nullptr))
+	{
+		LOG_WARN("write skipped: socket is closed or invalid");
+		return 0;
+	}
+	const FdHold hold(*this);
+
 	const int bufferLength = static_cast<int>(frame.size());
 	const char *const buffer = reinterpret_cast<const char *>(frame.data());
-	const int status = sendto(m_Socket, buffer, bufferLength, 0, m_DestAddr,
+	/* Broken peer must return an error. Default SIGPIPE would terminate the host. */
+#if defined(MSG_NOSIGNAL)
+	const int sendFlags = MSG_NOSIGNAL;
+#else
+	const int sendFlags = 0;
+#endif
+	const int status = sendto(sock, buffer, bufferLength, sendFlags, m_DestAddr,
 							  m_DestAddrLen);
 
 	if (SOCKET_ERROR == status)
