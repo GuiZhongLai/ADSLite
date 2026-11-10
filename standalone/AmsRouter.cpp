@@ -2,7 +2,9 @@
 #include "AmsAddr.h"
 #include "AmsNetId.h"
 
+#include <exception>
 #include <memory>
+#include <new>
 #include <string>
 
 AmsRouter::AmsRouter(AmsNetId netId) : localAddr(netId)
@@ -85,39 +87,71 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 {
 	/**
 	 * DNS查找非常耗时，所以先做查找，然后再使用结果。
+	 * 查找与建连都放在 try 内：失败时清理 connection_attempts 并返回错误码。
+	 * 异常不得离开本函数，否则会穿过 C API 并 std::terminate 宿主进程。
 	 */
-	auto hostAddresses = bhf::ads::GetListOfAddresses(host, "48898");
-	std::unique_lock<std::recursive_mutex> lock(mutex);
-	AwaitConnectionAttempts(ams, lock);
-	const auto oldConnection = GetConnection(ams);
-	if (oldConnection && !oldConnection->IsConnectedTo(hostAddresses.get()))
+	std::unique_lock<std::recursive_mutex> lock(mutex, std::defer_lock);
+	bool attemptTracked = false;
+	auto releaseAttempt = [&]()
 	{
-		/**
-		 * 这个AmsNetId已经有了一条路由，不同的IP。
-		 * 必须首先删除旧的路由！
-		 */
-		return ROUTERERR_PORTALREADYINUSE;
-	}
-
-	for (const auto &conn : connections)
-	{
-		if (conn->IsConnectedTo(hostAddresses.get()))
+		if (!attemptTracked)
 		{
-			conn->refCount++;
-			mapping[ams] = conn.get();
-			routeHosts[ams] = host;
-			return 0;
+			return;
 		}
-	}
-
-	connection_attempts[ams] = {};
-	lock.unlock();
+		try
+		{
+			if (!lock.owns_lock())
+			{
+				lock.lock();
+			}
+			connection_attempts.erase(ams);
+			connection_attempt_events.notify_all();
+			attemptTracked = false;
+		}
+		catch (...)
+		{
+		}
+	};
+	struct AttemptGuard
+	{
+		decltype(releaseAttempt) &release;
+		~AttemptGuard() { release(); }
+	} attemptGuard{releaseAttempt};
 
 	try
 	{
+		auto hostAddresses = bhf::ads::GetListOfAddresses(host, "48898");
+		lock.lock();
+		AwaitConnectionAttempts(ams, lock);
+		const auto oldConnection = GetConnection(ams);
+		if (oldConnection && !oldConnection->IsConnectedTo(hostAddresses.get()))
+		{
+			/**
+			 * 这个AmsNetId已经有了一条路由，不同的IP。
+			 * 必须首先删除旧的路由！
+			 */
+			return ROUTERERR_PORTALREADYINUSE;
+		}
+
+		for (const auto &conn : connections)
+		{
+			if (conn->IsConnectedTo(hostAddresses.get()))
+			{
+				conn->refCount++;
+				mapping[ams] = conn.get();
+				routeHosts[ams] = host;
+				return 0;
+			}
+		}
+
+		connection_attempts[ams] = {};
+		attemptTracked = true;
+		lock.unlock();
+
 		auto new_connection = std::unique_ptr<AmsConnection>(new AmsConnection{*this, hostAddresses.get()});
 		lock.lock();
 		connection_attempts.erase(ams);
+		attemptTracked = false;
 		connection_attempt_events.notify_all();
 
 		connections.push_back(std::move(new_connection));
@@ -132,12 +166,17 @@ long AmsRouter::AddRoute(AmsNetId ams, const std::string &host)
 		routeHosts[ams] = host;
 		return !inserted->ownIp;
 	}
-	catch (std::exception &e)
+	catch (const std::bad_alloc &)
 	{
-		lock.lock();
-		connection_attempts.erase(ams);
-		connection_attempt_events.notify_all();
-		throw e;
+		return GLOBALERR_NO_MEMORY;
+	}
+	catch (const std::exception &)
+	{
+		return GLOBALERR_TARGET_PORT;
+	}
+	catch (...)
+	{
+		return GLOBALERR_TARGET_PORT;
 	}
 }
 
@@ -195,21 +234,36 @@ long AmsRouter::AdsRequest(AmsRequest &request)
 	}
 
 	std::string host;
+	try
 	{
-		std::lock_guard<std::recursive_mutex> lock(mutex);
-		const auto hostIt = routeHosts.find(request.destAddr.netId);
-		if (hostIt == routeHosts.end())
 		{
-			return status;
+			std::lock_guard<std::recursive_mutex> lock(mutex);
+			const auto hostIt = routeHosts.find(request.destAddr.netId);
+			if (hostIt == routeHosts.end())
+			{
+				return status;
+			}
+			host = hostIt->second;
 		}
-		host = hostIt->second;
-	}
 
-	InvalidateRouteConnection(request.destAddr.netId, ads);
-	const auto reconnectStatus = AddRoute(request.destAddr.netId, host);
-	if (reconnectStatus)
+		InvalidateRouteConnection(request.destAddr.netId, ads);
+		const auto reconnectStatus = AddRoute(request.destAddr.netId, host);
+		if (reconnectStatus)
+		{
+			return reconnectStatus;
+		}
+	}
+	catch (const std::bad_alloc &)
 	{
-		return reconnectStatus;
+		return GLOBALERR_NO_MEMORY;
+	}
+	catch (const std::exception &)
+	{
+		return GLOBALERR_TARGET_PORT;
+	}
+	catch (...)
+	{
+		return GLOBALERR_TARGET_PORT;
 	}
 
 	auto retryConnection = GetConnection(request.destAddr.netId);

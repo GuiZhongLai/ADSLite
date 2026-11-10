@@ -6,6 +6,8 @@
 
 #include <limits>
 #include <cstring>
+#include <exception>
+#include <new>
 
 static AmsRouter &GetRouter()
 {
@@ -131,6 +133,35 @@ static long SendRecv(const std::string &remote, Frame &f, const uint32_t service
         }                                    \
     } while (false)
 
+namespace
+{
+/**
+ * C API 边界：异常不得传出。
+ * bad_alloc -> GLOBALERR_NO_MEMORY，其余异常 -> GLOBALERR_TARGET_PORT
+ * （与 AddLocalRoute 对 runtime_error 的映射一致，并覆盖全部 std::exception）。
+ */
+template <typename Fn>
+long CallAndMapException(Fn &&fn)
+{
+    try
+    {
+        return fn();
+    }
+    catch (const std::bad_alloc &)
+    {
+        return GLOBALERR_NO_MEMORY;
+    }
+    catch (const std::exception &)
+    {
+        return GLOBALERR_TARGET_PORT;
+    }
+    catch (...)
+    {
+        return GLOBALERR_TARGET_PORT;
+    }
+}
+} // namespace
+
 long AdsPortCloseEx(uint16_t port)
 {
     ASSERT_PORT(port);
@@ -151,7 +182,8 @@ long AdsGetLocalAddressEx(uint16_t port, AmsAddr *pAddr)
 long AdsSyncSetTimeoutEx(uint16_t port, uint32_t timeout)
 {
     ASSERT_PORT(port);
-    return GetRouter().SetTimeout(port, timeout);
+    return CallAndMapException([&]() -> long
+                               { return GetRouter().SetTimeout(port, timeout); });
 }
 
 long AdsSyncGetTimeoutEx(uint16_t port, uint32_t *pTimeout)
@@ -161,7 +193,8 @@ long AdsSyncGetTimeoutEx(uint16_t port, uint32_t *pTimeout)
     {
         return ADSERR_CLIENT_INVALIDPARM;
     }
-    return GetRouter().GetTimeout(port, *pTimeout);
+    return CallAndMapException([&]() -> long
+                               { return GetRouter().GetTimeout(port, *pTimeout); });
 }
 
 long AdsSyncReadReqEx2(uint16_t port, const AmsAddr *pAddr, uint32_t indexGroup, uint32_t indexOffset, uint32_t length, void *pData, uint32_t *pBytesRead)
@@ -172,27 +205,23 @@ long AdsSyncReadReqEx2(uint16_t port, const AmsAddr *pAddr, uint32_t indexGroup,
         return ADSERR_CLIENT_INVALIDPARM;
     }
 
-    try
-    {
-        AmsRequest request{
-            *pAddr,
-            port,
-            AoEHeader::READ,
-            true,
-            length,
-            pData,
-            pBytesRead,
-            sizeof(AoERequestHeader)};
-        request.frame.prepend(AoERequestHeader{
-            indexGroup,
-            indexOffset,
-            length});
-        return GetRouter().AdsRequest(request);
-    }
-    catch (const std::bad_alloc &)
-    {
-        return GLOBALERR_NO_MEMORY;
-    }
+    return CallAndMapException([&]() -> long
+                               {
+                                   AmsRequest request{
+                                       *pAddr,
+                                       port,
+                                       AoEHeader::READ,
+                                       true,
+                                       length,
+                                       pData,
+                                       pBytesRead,
+                                       sizeof(AoERequestHeader)};
+                                   request.frame.prepend(AoERequestHeader{
+                                       indexGroup,
+                                       indexOffset,
+                                       length});
+                                   return GetRouter().AdsRequest(request);
+                               });
 }
 
 long AdsSyncWriteReqEx2(uint16_t port, const AmsAddr *pAddr, uint32_t indexGroup, uint32_t indexOffset, uint32_t length, const void *pBuffer)
@@ -203,28 +232,24 @@ long AdsSyncWriteReqEx2(uint16_t port, const AmsAddr *pAddr, uint32_t indexGroup
         return ADSERR_CLIENT_INVALIDPARM;
     }
 
-    try
-    {
-        AmsRequest request{
-            *pAddr,
-            port,
-            AoEHeader::WRITE,
-            false,
-            0,
-            nullptr,
-            nullptr,
-            sizeof(AoERequestHeader) + length,
-        };
-        request.frame.prepend(pBuffer, length);
-        request.frame.prepend<AoERequestHeader>({indexGroup,
-                                                 indexOffset,
-                                                 length});
-        return GetRouter().AdsRequest(request);
-    }
-    catch (const std::bad_alloc &)
-    {
-        return GLOBALERR_NO_MEMORY;
-    }
+    return CallAndMapException([&]() -> long
+                               {
+                                   AmsRequest request{
+                                       *pAddr,
+                                       port,
+                                       AoEHeader::WRITE,
+                                       false,
+                                       0,
+                                       nullptr,
+                                       nullptr,
+                                       sizeof(AoERequestHeader) + length,
+                                   };
+                                   request.frame.prepend(pBuffer, length);
+                                   request.frame.prepend<AoERequestHeader>({indexGroup,
+                                                                            indexOffset,
+                                                                            length});
+                                   return GetRouter().AdsRequest(request);
+                               });
 }
 
 long AdsSyncReadStateReqEx(uint16_t port, const AmsAddr *pAddr, uint16_t *pAdsState, uint16_t *pDeviceState)
@@ -235,52 +260,44 @@ long AdsSyncReadStateReqEx(uint16_t port, const AmsAddr *pAddr, uint16_t *pAdsSt
         return ADSERR_CLIENT_INVALIDPARM;
     }
 
-    try
-    {
-        uint16_t buffer[2];
-        AmsRequest request{
-            *pAddr,
-            port,
-            AoEHeader::READ_STATE,
-            true,
-            sizeof(buffer),
-            buffer};
-        const auto status = GetRouter().AdsRequest(request);
-        if (!status)
-        {
-            *pAdsState = bhf::ads::letoh(buffer[0]);
-            *pDeviceState = bhf::ads::letoh(buffer[1]);
-        }
-        return status;
-    }
-    catch (const std::bad_alloc &)
-    {
-        return GLOBALERR_NO_MEMORY;
-    }
+    return CallAndMapException([&]() -> long
+                               {
+                                   uint16_t buffer[2];
+                                   AmsRequest request{
+                                       *pAddr,
+                                       port,
+                                       AoEHeader::READ_STATE,
+                                       true,
+                                       sizeof(buffer),
+                                       buffer};
+                                   const auto status = GetRouter().AdsRequest(request);
+                                   if (!status)
+                                   {
+                                       *pAdsState = bhf::ads::letoh(buffer[0]);
+                                       *pDeviceState = bhf::ads::letoh(buffer[1]);
+                                   }
+                                   return status;
+                               });
 }
 
 long AdsSyncWriteControlReqEx(uint16_t port, const AmsAddr *pAddr, uint16_t adsState, uint16_t deviceState, uint32_t length, const void *pData)
 {
     ASSERT_PORT_AND_AMSADDR(port, pAddr);
-    try
-    {
-        AmsRequest request{
-            *pAddr,
-            port,
-            AoEHeader::WRITE_CONTROL,
-            false,
-            0, nullptr, nullptr,
-            sizeof(AdsWriteCtrlRequest) + length};
-        request.frame.prepend(pData, length);
-        request.frame.prepend<AdsWriteCtrlRequest>({adsState,
-                                                    deviceState,
-                                                    length});
-        return GetRouter().AdsRequest(request);
-    }
-    catch (const std::bad_alloc &)
-    {
-        return GLOBALERR_NO_MEMORY;
-    }
+    return CallAndMapException([&]() -> long
+                               {
+                                   AmsRequest request{
+                                       *pAddr,
+                                       port,
+                                       AoEHeader::WRITE_CONTROL,
+                                       false,
+                                       0, nullptr, nullptr,
+                                       sizeof(AdsWriteCtrlRequest) + length};
+                                   request.frame.prepend(pData, length);
+                                   request.frame.prepend<AdsWriteCtrlRequest>({adsState,
+                                                                               deviceState,
+                                                                               length});
+                                   return GetRouter().AdsRequest(request);
+                               });
 }
 
 long AdsSyncReadWriteReqEx2(uint16_t port,
@@ -299,45 +316,31 @@ long AdsSyncReadWriteReqEx2(uint16_t port,
         return ADSERR_CLIENT_INVALIDPARM;
     }
 
-    try
-    {
-        AmsRequest request{
-            *pAddr,
-            port,
-            AoEHeader::READ_WRITE,
-            readLength != 0,
-            readLength,
-            pReadData,
-            pBytesRead,
-            sizeof(AoEReadWriteReqHeader) + writeLength};
-        request.frame.prepend(pWriteData, writeLength);
-        request.frame.prepend(AoEReadWriteReqHeader{
-            indexGroup,
-            indexOffset,
-            readLength,
-            writeLength});
-        return GetRouter().AdsRequest(request);
-    }
-    catch (const std::bad_alloc &)
-    {
-        return GLOBALERR_NO_MEMORY;
-    }
+    return CallAndMapException([&]() -> long
+                               {
+                                   AmsRequest request{
+                                       *pAddr,
+                                       port,
+                                       AoEHeader::READ_WRITE,
+                                       readLength != 0,
+                                       readLength,
+                                       pReadData,
+                                       pBytesRead,
+                                       sizeof(AoEReadWriteReqHeader) + writeLength};
+                                   request.frame.prepend(pWriteData, writeLength);
+                                   request.frame.prepend(AoEReadWriteReqHeader{
+                                       indexGroup,
+                                       indexOffset,
+                                       readLength,
+                                       writeLength});
+                                   return GetRouter().AdsRequest(request);
+                               });
 }
 
 long AddLocalRoute(AmsNetId ams, const char *ip)
 {
-    try
-    {
-        return GetRouter().AddRoute(ams, ip);
-    }
-    catch (const std::bad_alloc &)
-    {
-        return GLOBALERR_NO_MEMORY;
-    }
-    catch (const std::runtime_error &)
-    {
-        return GLOBALERR_TARGET_PORT;
-    }
+    return CallAndMapException([&]() -> long
+                               { return GetRouter().AddRoute(ams, ip); });
 }
 
 void DeleteLocalRoute(AmsNetId ams)
